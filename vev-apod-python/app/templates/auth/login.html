@@ -1,0 +1,31 @@
+{% extends 'base.html' %}
+{% block title %}Σύνδεση – Βεβαιώσεις Αποδοχών{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center mt-5">
+  <div class="col-md-4">
+    <div class="card">
+      <div class="card-header card-header-brand text-center py-3">
+        <h5 class="mb-0"><i class="bi bi-lock me-2"></i>Σύνδεση Διαχειριστή</h5>
+      </div>
+      <div class="card-body p-4">
+        <form method="post">
+          <div class="mb-3">
+            <label class="form-label fw-semibold">Όνομα χρήστη</label>
+            <input type="text" name="username" class="form-control"
+                   autofocus autocomplete="username" required>
+          </div>
+          <div class="mb-4">
+            <label class="form-label fw-semibold">Κωδικός</label>
+            <input type="password" name="password" class="form-control"
+                   autocomplete="current-password" required>
+          </div>
+          <button type="submit" class="btn btn-brand w-100">
+            <i class="bi bi-box-arrow-in-right me-1"></i> Είσοδος
+          </button>
+        </form>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}

@@ -1,0 +1,147 @@
+{% extends 'base.html' %}
+{% block title %}Χρήστες – Διαχείριση{% endblock %}
+
+{% block content %}
+<div class="d-flex align-items-center mb-4 gap-3">
+  <a href="{{ url_for('admin.dashboard') }}" class="btn btn-outline-secondary btn-sm">
+    <i class="bi bi-arrow-left"></i> Dashboard
+  </a>
+  <h4 class="mb-0"><i class="bi bi-people me-2"></i>Διαχείριση Χρηστών</h4>
+</div>
+
+<!-- Create user -->
+<div class="card mb-4">
+  <div class="card-header card-header-brand">
+    <i class="bi bi-person-plus me-1"></i> Δημιουργία νέου χρήστη
+  </div>
+  <div class="card-body">
+    <form method="post" action="{{ url_for('admin.create_user') }}"
+          class="row g-3 align-items-end">
+      <div class="col-md-3">
+        <label class="form-label fw-semibold">Όνομα χρήστη</label>
+        <input type="text" name="username" class="form-control"
+               autocomplete="off" required>
+      </div>
+      <div class="col-md-3">
+        <label class="form-label fw-semibold">Κωδικός</label>
+        <input type="password" name="password" class="form-control"
+               autocomplete="new-password" required>
+      </div>
+      <div class="col-md-2 d-flex align-items-center mt-4 gap-2">
+        <input type="checkbox" name="is_admin" value="1" id="is_admin" class="form-check-input">
+        <label for="is_admin" class="form-check-label">Διαχειριστής</label>
+      </div>
+      <div class="col-md-2">
+        <button type="submit" class="btn btn-brand w-100">
+          <i class="bi bi-plus-lg me-1"></i> Δημιουργία
+        </button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- Users table -->
+<div class="card">
+  <div class="card-header card-header-brand">
+    <i class="bi bi-list-ul me-1"></i> Λίστα χρηστών
+  </div>
+  <div class="card-body p-0">
+    <div class="table-responsive">
+      <table class="table table-hover mb-0 align-middle">
+        <thead>
+          <tr>
+            <th>Όνομα χρήστη</th>
+            <th>Ρόλος</th>
+            <th>Δημιουργήθηκε</th>
+            <th class="text-end">Ενέργειες</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for u in users %}
+          <tr>
+            <td class="fw-semibold">
+              <i class="bi bi-person-circle me-1 text-muted"></i>{{ u.username }}
+            </td>
+            <td>
+              {% if u.is_admin %}
+                <span class="badge bg-primary">Διαχειριστής</span>
+              {% else %}
+                <span class="badge bg-secondary">Χρήστης</span>
+              {% endif %}
+            </td>
+            <td>
+              <small class="text-muted">
+                {{ u.created_at.strftime('%d/%m/%Y %H:%M') if u.created_at else '—' }}
+              </small>
+            </td>
+            <td class="text-end">
+              <div class="d-flex gap-2 justify-content-end">
+
+                <!-- Change password modal trigger -->
+                <button class="btn btn-sm btn-outline-secondary"
+                        data-bs-toggle="modal"
+                        data-bs-target="#pwModal"
+                        data-user-id="{{ u.id }}"
+                        data-username="{{ u.username }}">
+                  <i class="bi bi-key me-1"></i>Κωδικός
+                </button>
+
+                <!-- Delete -->
+                {% if u.id != current_user.id %}
+                <form method="post"
+                      action="{{ url_for('admin.delete_user', user_id=u.id) }}"
+                      onsubmit="return confirm('Διαγραφή χρήστη {{ u.username }};')">
+                  <button type="submit" class="btn btn-sm btn-danger">
+                    <i class="bi bi-trash"></i>
+                  </button>
+                </form>
+                {% endif %}
+              </div>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<!-- Change password modal -->
+<div class="modal fade" id="pwModal" tabindex="-1">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <form method="post" id="pwForm">
+        <div class="modal-header card-header-brand">
+          <h5 class="modal-title text-white">
+            <i class="bi bi-key me-1"></i> Αλλαγή κωδικού: <span id="pwUsername"></span>
+          </h5>
+          <button type="button" class="btn-close btn-close-white"
+                  data-bs-dismiss="modal"></button>
+        </div>
+        <div class="modal-body">
+          <label class="form-label fw-semibold">Νέος κωδικός</label>
+          <input type="password" name="new_password" class="form-control"
+                 autocomplete="new-password" required>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary"
+                  data-bs-dismiss="modal">Άκυρο</button>
+          <button type="submit" class="btn btn-brand">Αποθήκευση</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const pwModal = document.getElementById('pwModal');
+pwModal.addEventListener('show.bs.modal', e => {
+  const btn = e.relatedTarget;
+  document.getElementById('pwUsername').textContent = btn.dataset.username;
+  document.getElementById('pwForm').action =
+    `/admin/users/${btn.dataset.userId}/password`;
+});
+</script>
+{% endblock %}

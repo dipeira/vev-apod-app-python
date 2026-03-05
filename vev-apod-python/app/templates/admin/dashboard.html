@@ -1,0 +1,299 @@
+{% extends 'base.html' %}
+{% block title %}Dashboard – Διαχείριση{% endblock %}
+
+{% block content %}
+<h4 class="mb-4"><i class="bi bi-speedometer2 me-2"></i>Dashboard Διαχείρισης</h4>
+
+<!-- Upload form -->
+<div class="card mb-4">
+  <div class="card-header card-header-brand">
+    <i class="bi bi-cloud-upload me-1"></i> Ανέβασμα αρχείου Excel για νέο / υπάρχον έτος
+  </div>
+  <div class="card-body">
+    <form method="post" action="{{ url_for('admin.upload') }}" enctype="multipart/form-data">
+      <div class="row g-3 align-items-end">
+        <div class="col-md-6">
+          <label class="form-label fw-semibold">Αρχείο Excel (.xls / .xlsx)</label>
+          <input type="file" name="excel_file" id="excel_file_input"
+                 class="form-control" accept=".xls,.xlsx" required>
+          <small class="text-muted">Το έτος συμπληρώνεται αυτόματα από το όνομα του αρχείου.</small>
+        </div>
+        <div class="col-md-2">
+          <label class="form-label fw-semibold">Έτος</label>
+          <input type="number" name="year" id="year_input"
+                 class="form-control" placeholder="π.χ. 2024"
+                 min="2000" max="2100" required>
+        </div>
+        <div class="col-md-2">
+          <button type="submit" class="btn btn-brand w-100">
+            <i class="bi bi-upload me-1"></i> Ανέβασμα
+          </button>
+        </div>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- Year list -->
+<div class="card">
+  <div class="card-header card-header-brand">
+    <i class="bi bi-calendar3 me-1"></i> Διαθέσιμα Έτη
+  </div>
+  <div class="card-body p-0">
+    {% if years %}
+    <div class="table-responsive">
+      <table class="table table-hover mb-0 align-middle">
+        <thead>
+          <tr>
+            <th>Έτος</th>
+            <th>Excel</th>
+            <th style="min-width:320px">Κατάσταση / Πρόοδος</th>
+            <th>Εγγραφές</th>
+            <th>Ανέβηκε</th>
+            <th>Επεξεργάστηκε</th>
+            <th class="text-end">Ενέργειες</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for yd in years %}
+          <tr id="row-{{ yd.id }}">
+
+            <td class="fw-bold fs-5">{{ yd.year }}</td>
+
+            <td>
+              {% if yd.excel_filename %}
+                <i class="bi bi-file-earmark-excel text-success"></i>
+                <small class="text-muted d-block">{{ yd.excel_filename }}</small>
+              {% else %}
+                <span class="text-muted">—</span>
+              {% endif %}
+            </td>
+
+            <td>
+              <!-- Status badge -->
+              <span id="badge-{{ yd.id }}"
+                    class="badge bg-{{ 'success' if yd.processing_status=='done'
+                                       else 'warning text-dark' if yd.processing_status=='processing'
+                                       else 'danger' if yd.processing_status=='error'
+                                       else 'secondary' }}">
+                {{ yd.processing_status }}
+              </span>
+
+              <!-- DB message (step checkpoints) -->
+              <div id="msg-{{ yd.id }}" class="small text-muted mt-1">
+                {{ yd.processing_message or '' }}
+              </div>
+
+              <!-- Progress bar (shown during / after processing) -->
+              <div id="pbwrap-{{ yd.id }}"
+                   class="mt-2"
+                   style="{{ '' if yd.processing_status in ('processing','done') else 'display:none' }}">
+                <div class="progress" style="height:18px">
+                  <div id="pb-{{ yd.id }}"
+                       class="progress-bar
+                              {{ 'progress-bar-striped progress-bar-animated bg-warning' if yd.processing_status=='processing'
+                                 else 'bg-success' }}"
+                       role="progressbar"
+                       style="width:{{ '100' if yd.processing_status=='done' else '0' }}%;
+                              min-width:2em; font-size:.75rem">
+                    {{ '100%' if yd.processing_status=='done' else '0%' }}
+                  </div>
+                </div>
+                <!-- Verbose real-time detail -->
+                <div id="detail-{{ yd.id }}"
+                     class="small text-muted mt-1"
+                     style="font-family:monospace; word-break:break-all">
+                </div>
+              </div>
+            </td>
+
+            <td id="count-{{ yd.id }}">
+              {{ yd.employee_count if yd.employee_count else '—' }}
+            </td>
+
+            <td>
+              <small class="text-muted">
+                {{ yd.uploaded_at.strftime('%d/%m/%Y %H:%M') if yd.uploaded_at else '—' }}
+              </small>
+            </td>
+
+            <td>
+              <small class="text-muted">
+                {{ yd.processed_at.strftime('%d/%m/%Y %H:%M') if yd.processed_at else '—' }}
+              </small>
+            </td>
+
+            <td class="text-end">
+              <div class="d-flex gap-2 justify-content-end flex-wrap">
+
+                <!-- Process -->
+                <button id="btn-process-{{ yd.id }}"
+                        class="btn btn-sm btn-warning btn-process"
+                        data-year-id="{{ yd.id }}"
+                        {% if not yd.excel_filename or yd.processing_status=='processing' %}
+                        disabled{% endif %}>
+                  <i class="bi bi-gear me-1"></i>Process
+                </button>
+
+                <!-- Abort (visible only while processing) -->
+                <button id="btn-abort-{{ yd.id }}"
+                        class="btn btn-sm btn-danger btn-abort"
+                        data-year-id="{{ yd.id }}"
+                        style="{{ '' if yd.processing_status=='processing' else 'display:none' }}">
+                  <i class="bi bi-stop-circle me-1"></i>Abort
+                </button>
+
+                <!-- Delete -->
+                <form method="post"
+                      action="{{ url_for('admin.delete_year', year_id=yd.id) }}"
+                      onsubmit="return confirm('Διαγραφή έτους {{ yd.year }};')">
+                  <button type="submit" class="btn btn-sm btn-outline-danger">
+                    <i class="bi bi-trash"></i>
+                  </button>
+                </form>
+
+              </div>
+            </td>
+
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+      <div class="p-4 text-center text-muted">
+        <i class="bi bi-inbox fs-3 d-block mb-2"></i>
+        Δεν υπάρχουν δεδομένα. Ανεβάστε ένα αρχείο Excel παραπάνω.
+      </div>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}
+
+
+{% block scripts %}
+<script>
+// ── Auto-fill year from filename ──────────────────────────────────────────
+document.getElementById('excel_file_input').addEventListener('change', function () {
+  const name = this.files[0]?.name || '';
+  const m = name.match(/\b(20\d{2})\b/);
+  if (m) document.getElementById('year_input').value = m[1];
+});
+
+// ── Status colours ────────────────────────────────────────────────────────
+const BG = {
+  idle:       'secondary',
+  processing: 'warning text-dark',
+  done:       'success',
+  error:      'danger',
+};
+
+// ── Update a single row's UI ──────────────────────────────────────────────
+function updateRow(id, data) {
+  const badge    = document.getElementById(`badge-${id}`);
+  const msgEl    = document.getElementById(`msg-${id}`);
+  const pbWrap   = document.getElementById(`pbwrap-${id}`);
+  const pb       = document.getElementById(`pb-${id}`);
+  const detailEl = document.getElementById(`detail-${id}`);
+  const countEl  = document.getElementById(`count-${id}`);
+  const btnP     = document.getElementById(`btn-process-${id}`);
+  const btnA     = document.getElementById(`btn-abort-${id}`);
+
+  // Badge
+  badge.className = `badge bg-${BG[data.status] || 'secondary'}`;
+  badge.textContent = data.status;
+
+  // DB message
+  if (data.message) msgEl.textContent = data.message;
+
+  // Progress bar
+  const pct = data.progress ?? 0;
+  pbWrap.style.display = '';
+
+  if (data.status === 'processing') {
+    pb.className = 'progress-bar progress-bar-striped progress-bar-animated bg-warning';
+    pb.style.width  = `${pct}%`;
+    pb.textContent  = `${pct}%`;
+    detailEl.textContent = data.detail || '';
+    if (btnP) btnP.disabled = true;
+    if (btnA) btnA.style.display = '';
+  } else if (data.status === 'done') {
+    pb.className   = 'progress-bar bg-success';
+    pb.style.width = '100%';
+    pb.textContent = '100%';
+    detailEl.textContent = data.detail || '';
+    if (btnP) btnP.disabled = false;
+    if (btnA) btnA.style.display = 'none';
+    if (data.employee_count) countEl.textContent = data.employee_count;
+  } else {
+    // idle / error
+    if (data.status === 'error') {
+      pb.className   = 'progress-bar bg-danger';
+      pb.style.width = `${pct}%`;
+      pb.textContent = `${pct}%`;
+      detailEl.textContent = data.detail || '';
+    } else {
+      pbWrap.style.display = 'none';
+    }
+    if (btnP) btnP.disabled = false;
+    if (btnA) btnA.style.display = 'none';
+  }
+}
+
+// ── Poll status every second while processing ─────────────────────────────
+function poll(yearId) {
+  fetch(`/admin/status/${yearId}`)
+    .then(r => r.json())
+    .then(data => {
+      updateRow(yearId, data);
+      if (data.status === 'processing') {
+        setTimeout(() => poll(yearId), 1000);
+      } else {
+        // Brief delay then reload to refresh timestamps
+        setTimeout(() => location.reload(), 1200);
+      }
+    })
+    .catch(() => setTimeout(() => poll(yearId), 3000));
+}
+
+// ── Process button ────────────────────────────────────────────────────────
+document.querySelectorAll('.btn-process').forEach(btn => {
+  btn.addEventListener('click', () => {
+    const id = btn.dataset.yearId;
+    btn.disabled = true;
+    fetch(`/admin/process/${id}`, { method: 'POST' })
+      .then(r => r.json())
+      .then(data => {
+        if (data.status === 'processing') {
+          updateRow(id, { status: 'processing', progress: 1,
+                          detail: 'Εκκίνηση…', message: 'Έναρξη επεξεργασίας…' });
+          poll(id);
+        } else {
+          alert(data.error || 'Άγνωστο σφάλμα');
+          btn.disabled = false;
+        }
+      });
+  });
+});
+
+// ── Abort button ──────────────────────────────────────────────────────────
+document.querySelectorAll('.btn-abort').forEach(btn => {
+  btn.addEventListener('click', () => {
+    const id = btn.dataset.yearId;
+    if (!confirm('Να ακυρωθεί η επεξεργασία;')) return;
+    btn.disabled = true;
+    fetch(`/admin/abort/${id}`, { method: 'POST' })
+      .then(() => {
+        document.getElementById(`detail-${id}`).textContent = 'Αίτημα ακύρωσης εστάλη…';
+      });
+  });
+});
+
+// ── Auto-poll rows already in "processing" state on page load ─────────────
+document.querySelectorAll('[id^="badge-"]').forEach(el => {
+  if (el.textContent.trim() === 'processing') {
+    poll(el.id.replace('badge-', ''));
+  }
+});
+</script>
+{% endblock %}

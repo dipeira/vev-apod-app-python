@@ -1,0 +1,70 @@
+{% extends 'base.html' %}
+{% block title %}Βεβαιώσεις Αποδοχών{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center mt-4">
+  <div class="col-md-5">
+
+    <div class="text-center mb-4">
+      <i class="bi bi-file-earmark-text display-4 text-primary"></i>
+      <h3 class="mt-2 fw-bold" style="color:var(--brand);">
+        Βεβαιώσεις Αποδοχών
+      </h3>
+      <p class="text-muted">
+        Εισάγετε τα στοιχεία σας για να λάβετε τη βεβαίωση αποδοχών σας.
+      </p>
+    </div>
+
+    <div class="card">
+      <div class="card-header card-header-brand text-center">
+        <i class="bi bi-search me-1"></i> Αναζήτηση Βεβαίωσης
+      </div>
+      <div class="card-body p-4">
+
+        {% if not years %}
+          <div class="alert alert-info text-center mb-0">
+            <i class="bi bi-info-circle me-1"></i>
+            Δεν υπάρχουν διαθέσιμα δεδομένα αυτή τη στιγμή.
+          </div>
+        {% else %}
+          <form method="post">
+            <div class="mb-3">
+              <label class="form-label fw-semibold">Οικονομικό Έτος</label>
+              <select name="year" class="form-select" required>
+                {% for yd in years %}
+                  <option value="{{ yd.year }}">{{ yd.year }}</option>
+                {% endfor %}
+              </select>
+            </div>
+
+            <div class="mb-3">
+              <label class="form-label fw-semibold">ΑΦΜ</label>
+              <input type="text" name="afm" class="form-control"
+                     placeholder="Αριθμός Φορολογικού Μητρώου"
+                     inputmode="numeric" pattern="\d{8,9}"
+                     autocomplete="off" required>
+            </div>
+
+            <div class="mb-4">
+              <label class="form-label fw-semibold">ΑΜΚΑ</label>
+              <input type="text" name="amka" class="form-control"
+                     placeholder="Αριθμός Μητρώου Κοινωνικής Ασφάλισης"
+                     inputmode="numeric" pattern="\d{11}"
+                     autocomplete="off" required>
+            </div>
+
+            <button type="submit" class="btn btn-brand w-100 py-2">
+              <i class="bi bi-download me-1"></i> Λήψη Βεβαίωσης
+            </button>
+          </form>
+        {% endif %}
+      </div>
+    </div>
+
+    <p class="text-center text-muted small mt-3">
+      <i class="bi bi-shield-lock me-1"></i>
+      Τα στοιχεία σας χρησιμοποιούνται μόνο για αναζήτηση και δεν αποθηκεύονται.
+    </p>
+  </div>
+</div>
+{% endblock %}

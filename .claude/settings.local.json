@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(\"/c/Users/User/AppData/Local/Programs/Python/Python311/python.exe\" -m venv \"c:/xampp/htdocs/vev-apod-app-python/vev-apod-python/venv\")"
+    ]
+  }
+}

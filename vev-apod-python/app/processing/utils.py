@@ -1,0 +1,400 @@
+"""
+Processing pipeline:
+  Step 1  excel_to_pdf  — LibreOffice headless converts Excel → PDF (landscape, exact formatting)
+  Step 2  clean_pdf     — removes blank pages (≤3 words), returns kept-page indices
+  Step 3  create_index  — scans clean PDF for AFM + AMKA → CSV index
+"""
+import csv
+import logging
+import os
+import re
+import shutil
+import subprocess
+import tempfile
+import threading
+import zipfile
+from datetime import datetime
+
+import PyPDF2
+
+logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# In-memory job state  { year_data_id: {progress, detail, abort} }
+# ---------------------------------------------------------------------------
+_state: dict = {}
+_state_lock = threading.Lock()
+
+
+def _set(yd_id, **kw):
+    if yd_id is None:
+        return
+    with _state_lock:
+        _state.setdefault(yd_id, {}).update(kw)
+
+
+def get_state(yd_id: int) -> dict:
+    with _state_lock:
+        return dict(_state.get(yd_id, {}))
+
+
+def request_abort(yd_id: int):
+    _set(yd_id, abort=True)
+
+
+def _aborted(yd_id) -> bool:
+    if yd_id is None:
+        return False
+    with _state_lock:
+        return _state.get(yd_id, {}).get('abort', False)
+
+
+class _Abort(Exception):
+    pass
+
+
+# ---------------------------------------------------------------------------
+# LibreOffice discovery
+# ---------------------------------------------------------------------------
+_LO_CANDIDATES = [
+    # Linux / Docker
+    'libreoffice', 'soffice',
+    '/usr/bin/libreoffice', '/usr/bin/soffice',
+    '/usr/local/bin/libreoffice',
+    # Windows
+    r'C:\Program Files\LibreOffice\program\soffice.exe',
+    r'C:\Program Files (x86)\LibreOffice\program\soffice.exe',
+    # macOS
+    '/Applications/LibreOffice.app/Contents/MacOS/soffice',
+]
+
+
+def _find_libreoffice():
+    for c in _LO_CANDIDATES:
+        if shutil.which(c) or os.path.isfile(c):
+            return c
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Helper: inject landscape orientation into .xlsx via ZIP/XML manipulation
+# (no openpyxl write needed — very fast for large workbooks)
+# ---------------------------------------------------------------------------
+_PGSETUP_RE1 = re.compile(rb'<pageSetup[^/]*/>', re.DOTALL)
+_PGSETUP_RE2 = re.compile(rb'<pageSetup[^>]*>.*?</pageSetup>', re.DOTALL)
+_LANDSCAPE_TAG = (
+    b'<pageSetup orientation="landscape" '
+    b'fitToPage="1" fitToWidth="1" fitToHeight="1"/>'
+)
+
+
+def _xlsx_set_landscape(src_path: str, dst_path: str):
+    """
+    Copy src .xlsx to dst, setting landscape + fit-to-one-page for every sheet.
+    This ensures LibreOffice renders each employee sheet on exactly 1 landscape page.
+    """
+    with zipfile.ZipFile(src_path, 'r') as zin, \
+         zipfile.ZipFile(dst_path, 'w', zipfile.ZIP_DEFLATED) as zout:
+        for item in zin.infolist():
+            data = zin.read(item.filename)
+            if (item.filename.startswith('xl/worksheets/sheet')
+                    and item.filename.endswith('.xml')):
+                # Remove any existing pageSetup elements
+                data = _PGSETUP_RE1.sub(b'', data)
+                data = _PGSETUP_RE2.sub(b'', data)
+                # Inject landscape + fit-to-1-page before </worksheet>
+                if b'</worksheet>' in data:
+                    data = data.replace(
+                        b'</worksheet>',
+                        _LANDSCAPE_TAG + b'</worksheet>',
+                        1,
+                    )
+            zout.writestr(item, data)
+
+
+# ---------------------------------------------------------------------------
+# Step 1: Excel → PDF via LibreOffice (preserves exact sheet formatting)
+# ---------------------------------------------------------------------------
+def excel_to_pdf(excel_path, pdf_path, yd_id=None):
+    """
+    Convert Excel to PDF using LibreOffice --headless.
+    For .xlsx files, first injects landscape+fit-to-1-page via ZIP manipulation
+    so each employee sheet becomes exactly one landscape PDF page.
+    Returns (success: bool, message: str, page_count: int)
+    """
+    lo = _find_libreoffice()
+    if not lo:
+        return (False,
+                'LibreOffice δεν βρέθηκε. Εγκαταστήστε το LibreOffice και ξαναδοκιμάστε.',
+                0)
+
+    _set(yd_id, progress=6,
+         detail='Βήμα 1/3: Μετατροπή Excel → PDF με LibreOffice… (παρακαλώ περιμένετε)')
+
+    out_dir = os.path.dirname(pdf_path)
+    os.makedirs(out_dir, exist_ok=True)
+
+    ext      = os.path.splitext(excel_path)[1].lower()
+    lo_input = excel_path
+    tmp_xlsx = None
+
+    if ext in ('.xlsx', '.xlsm'):
+        tmp_xlsx = tempfile.mktemp(suffix=ext, prefix='lo_landscape_')
+        try:
+            _xlsx_set_landscape(excel_path, tmp_xlsx)
+            lo_input = tmp_xlsx
+            logger.info('Landscape copy created: %s', tmp_xlsx)
+        except Exception as e:
+            logger.warning('Could not inject landscape into xlsx (%s); using original', e)
+            lo_input = excel_path
+
+    # Private temp profile prevents concurrent-run conflicts in LibreOffice
+    lo_profile_dir = tempfile.mkdtemp(prefix='lo_profile_')
+    lo_profile_uri = f'file:///{lo_profile_dir.replace(os.sep, "/")}'
+
+    try:
+        result = subprocess.run(
+            [
+                lo, '--headless',
+                f'-env:UserInstallation={lo_profile_uri}',
+                '--convert-to', 'pdf',
+                '--outdir', out_dir,
+                lo_input,
+            ],
+            capture_output=True, text=True, timeout=600,
+        )
+
+        if result.returncode != 0:
+            err = (result.stderr or result.stdout or 'Άγνωστο σφάλμα').strip()
+            return False, f'LibreOffice error: {err}', 0
+
+        base   = os.path.splitext(os.path.basename(lo_input))[0]
+        lo_out = os.path.join(out_dir, f'{base}.pdf')
+
+        if not os.path.exists(lo_out):
+            return False, 'LibreOffice δεν παρήγαγε αρχείο PDF.', 0
+
+        if lo_out != pdf_path:
+            shutil.move(lo_out, pdf_path)
+
+        with open(pdf_path, 'rb') as f:
+            count = len(PyPDF2.PdfReader(f).pages)
+
+        _set(yd_id, progress=33,
+             detail=f'✓ Βήμα 1/3: PDF δημιουργήθηκε ({count} σελίδες)')
+        return True, f'{count} σελίδες δημιουργήθηκαν.', count
+
+    except subprocess.TimeoutExpired:
+        return False, 'LibreOffice timeout (>10 λεπτά).', 0
+    except Exception as e:
+        logger.exception('excel_to_pdf failed')
+        return False, str(e), 0
+    finally:
+        shutil.rmtree(lo_profile_dir, ignore_errors=True)
+        if tmp_xlsx and os.path.exists(tmp_xlsx):
+            os.remove(tmp_xlsx)
+
+
+# ---------------------------------------------------------------------------
+# Step 2: Clean PDF — remove blank pages (≤3 words)
+# ---------------------------------------------------------------------------
+def clean_pdf(input_path, output_path, yd_id=None):
+    """
+    Returns (success, msg, kept_count).
+    Same logic as cleanPdf-dias.py.
+    """
+    try:
+        with open(input_path, 'rb') as f:
+            reader = PyPDF2.PdfReader(f)
+            total   = len(reader.pages)
+            writer  = PyPDF2.PdfWriter()
+            kept = removed = 0
+
+            for i, page in enumerate(reader.pages):
+                if i % 20 == 0 and _aborted(yd_id):
+                    raise _Abort()
+                text  = re.sub(r'\s\s+', ' ',
+                               (page.extract_text() or '').replace('\n', ' ').strip())
+                words = text.split()
+                if len(words) > 3:
+                    writer.add_page(page)
+                    kept += 1
+                else:
+                    removed += 1
+                if i % 20 == 0 or i == total - 1:
+                    pct  = 33 + int((i + 1) / total * 33)
+                    flag = '✓' if len(words) > 3 else '✗ κενή'
+                    _set(yd_id, progress=pct,
+                         detail=(f'Βήμα 2/3: Σελίδα {i+1}/{total} [{flag}]  '
+                                 f'Κρατήθηκαν: {kept}  Αφαιρέθηκαν: {removed}'))
+
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        with open(output_path, 'wb') as f:
+            writer.write(f)
+        return True, f'{kept} σελίδες (αφαιρέθηκαν {removed} κενές).', kept
+
+    except _Abort:
+        raise
+    except Exception as e:
+        logger.exception('clean_pdf failed')
+        return False, str(e), 0
+
+
+# ---------------------------------------------------------------------------
+# Step 3: Create CSV index
+# ---------------------------------------------------------------------------
+# Exact same patterns as createIndexFromPdf-dias.py
+_AFM_PAT  = re.compile(r'\b\d{9}\b')   # 9-digit AFM
+
+
+def create_index(pdf_path, csv_path, yd_id=None):
+    """
+    Scan each PDF page using the same logic as createIndexFromPdf-dias.py:
+      - Iterate tokens; keep overwriting afm with each 9-digit match.
+      - Record first 11-digit match as amka.
+      - Break when both found.
+    Result: afm = last 9-digit token found before amka (= employee personal AFM,
+    since org AFM appears first and gets overwritten by employee AFM).
+
+    Writes semicolon-delimited CSV: afm;amka;page
+    Returns (success, msg, matched_count)
+    """
+    try:
+        with open(pdf_path, 'rb') as f:
+            reader = PyPDF2.PdfReader(f)
+            total  = len(reader.pages)
+            rows   = [['afm', 'amka', 'page']]
+            count  = 0
+
+            for i, page in enumerate(reader.pages):
+                if i % 20 == 0 and _aborted(yd_id):
+                    raise _Abort()
+
+                tokens = re.sub(
+                    r'\s\s+', ' ',
+                    (page.extract_text() or '').replace('\n', ' ').strip()
+                ).split()
+
+                afm = amka = ''
+                afm_found = amka_found = False
+
+                # Mirror createIndexFromPdf-dias.py exactly:
+                # keep overwriting afm on every 9-digit hit until amka is found
+                for token in tokens:
+                    if _AFM_PAT.match(token):
+                        afm = token.lstrip('0')
+                        afm_found = True
+                    elif len(token) == 11 and token.isdigit():
+                        amka = token.lstrip('0')
+                        amka_found = True
+                    if afm_found and amka_found:
+                        break
+
+                rows.append([afm, amka, i + 1])
+                count += 1
+
+                if i % 20 == 0 or i == total - 1:
+                    pct = 66 + int((i + 1) / total * 34)
+                    _set(yd_id, progress=min(pct, 99),
+                         detail=(f'Βήμα 3/3: Σελίδα {i+1}/{total}  '
+                                 f'ΑΦΜ: {afm or "—"}  ΑΜΚΑ: {amka or "—"}'))
+
+        os.makedirs(os.path.dirname(csv_path), exist_ok=True)
+        with open(csv_path, 'w', newline='', encoding='utf-8') as f:
+            writer = csv.writer(f, delimiter=';')
+            writer.writerows(rows)
+
+        matched = sum(1 for r in rows[1:] if r[0] and r[1])
+        return True, f'{matched} εγγραφές με ΑΦΜ+ΑΜΚΑ ({count} σελίδες).', matched
+
+    except _Abort:
+        raise
+    except Exception as e:
+        logger.exception('create_index failed')
+        return False, str(e), 0
+
+
+# ---------------------------------------------------------------------------
+# Full pipeline (background thread)
+# ---------------------------------------------------------------------------
+def run_pipeline(year_data_id: int, flask_app):
+    def _run():
+        with flask_app.app_context():
+            from app import db
+            from app.models import YearData
+
+            yd = db.session.get(YearData, year_data_id)
+            if not yd:
+                return
+
+            _set(year_data_id, progress=0, detail='Προετοιμασία…', abort=False)
+
+            data_folder = flask_app.config['DATA_FOLDER']
+            year        = yd.year
+            ydir        = os.path.join(data_folder, str(year))
+            excel_path  = os.path.join(ydir, 'excel', yd.excel_filename)
+            raw_pdf     = os.path.join(ydir, 'pdf',   f'{year}_raw.pdf')
+            clean_path  = os.path.join(ydir, 'pdf',   f'{year}_clean.pdf')
+            csv_path    = os.path.join(ydir, 'csv',   f'{year}.csv')
+
+            try:
+                # ── Step 1: Excel → PDF (LibreOffice, landscape) ──────────
+                _set(year_data_id, progress=0,
+                     detail='Βήμα 1/3: Εκκίνηση LibreOffice (landscape)…')
+                yd.processing_message = 'Βήμα 1/3: Μετατροπή Excel → PDF (landscape)…'
+                db.session.commit()
+
+                ok, msg, pages = excel_to_pdf(excel_path, raw_pdf, year_data_id)
+                if not ok:
+                    raise RuntimeError(msg)
+
+                yd.processing_message = f'✓ Βήμα 1/3: {msg}'
+                db.session.commit()
+
+                # ── Step 2: Clean blank pages ─────────────────────────────
+                _set(year_data_id, progress=34,
+                     detail='Βήμα 2/3: Καθαρισμός κενών σελίδων…')
+                yd.processing_message = 'Βήμα 2/3: Καθαρισμός κενών σελίδων…'
+                db.session.commit()
+
+                ok, msg, kept = clean_pdf(raw_pdf, clean_path, year_data_id)
+                if not ok:
+                    raise RuntimeError(msg)
+
+                yd.processing_message = f'✓ Βήμα 2/3: {msg}'
+                db.session.commit()
+
+                # ── Step 3: Create CSV index ───────────────────────────────
+                _set(year_data_id, progress=67,
+                     detail='Βήμα 3/3: Δημιουργία ευρετηρίου…')
+                yd.processing_message = 'Βήμα 3/3: Δημιουργία ευρετηρίου…'
+                db.session.commit()
+
+                ok, msg, count = create_index(clean_path, csv_path, year_data_id)
+                if not ok:
+                    raise RuntimeError(msg)
+
+                yd.pdf_filename       = f'{year}_clean.pdf'
+                yd.csv_filename       = f'{year}.csv'
+                yd.employee_count     = count
+                yd.processing_status  = 'done'
+                yd.processing_message = f'✓ Ολοκληρώθηκε. {count} εγγραφές.'
+                yd.processed_at       = datetime.utcnow()
+                _set(year_data_id, progress=100,
+                     detail=f'✓ Ολοκληρώθηκε! {count} βεβαιώσεις έτοιμες.')
+
+            except _Abort:
+                yd.processing_status  = 'idle'
+                yd.processing_message = 'Ακυρώθηκε από τον χρήστη.'
+                _set(year_data_id, progress=0, detail='Ακυρώθηκε.')
+
+            except Exception as exc:
+                logger.exception('Pipeline failed for year %s', yd.year)
+                yd.processing_status  = 'error'
+                yd.processing_message = str(exc)
+                _set(year_data_id, progress=0, detail=f'Σφάλμα: {exc}')
+
+            finally:
+                db.session.commit()
+
+    threading.Thread(target=_run, daemon=True).start()
