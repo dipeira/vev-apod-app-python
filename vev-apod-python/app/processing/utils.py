@@ -9,7 +9,9 @@ import logging
 import os
 import re
 import shutil
+import signal
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -25,6 +27,9 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 _state: dict = {}
 _state_lock = threading.Lock()
+
+_threads: dict = {}          # year_data_id → Thread
+_threads_lock = threading.Lock()
 
 
 def _set(yd_id, **kw):
@@ -43,6 +48,15 @@ def request_abort(yd_id: int):
     _set(yd_id, abort=True)
 
 
+def wait_for_abort(yd_id: int, timeout: float = 15):
+    """Signal abort and wait up to `timeout` seconds for the thread to stop."""
+    request_abort(yd_id)
+    with _threads_lock:
+        t = _threads.get(yd_id)
+    if t and t.is_alive():
+        t.join(timeout=timeout)
+
+
 def _aborted(yd_id) -> bool:
     if yd_id is None:
         return False
@@ -52,6 +66,24 @@ def _aborted(yd_id) -> bool:
 
 class _Abort(Exception):
     pass
+
+
+# ---------------------------------------------------------------------------
+# Cross-platform process termination
+# ---------------------------------------------------------------------------
+def _kill_proc(proc):
+    """Terminate a subprocess and all its children (works on Linux and Windows)."""
+    try:
+        if sys.platform != 'win32':
+            os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+        else:
+            proc.terminate()
+    except Exception:
+        proc.terminate()
+    try:
+        proc.wait(timeout=5)
+    except Exception:
+        proc.kill()
 
 
 # ---------------------------------------------------------------------------
@@ -163,15 +195,18 @@ def excel_to_pdf(excel_path, pdf_path, yd_id=None):
                 lo_input,
             ],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            start_new_session=True,   # creates a process group on Linux
         )
 
         start = time.time()
         last_update = start
         while proc.poll() is None:
+            if _aborted(yd_id):
+                _kill_proc(proc)
+                raise _Abort()
             now = time.time()
             if now - start > 600:
-                proc.terminate()
-                proc.wait()
+                _kill_proc(proc)
                 return False, 'LibreOffice timeout (>10 λεπτά).', 0
             if now - last_update >= 5:
                 elapsed = int(now - start)
@@ -200,6 +235,8 @@ def excel_to_pdf(excel_path, pdf_path, yd_id=None):
              detail=f'✓ Βήμα 1/3: PDF δημιουργήθηκε ({count} σελίδες)')
         return True, f'{count} σελίδες δημιουργήθηκαν.', count
 
+    except _Abort:
+        raise
     except subprocess.TimeoutExpired:
         return False, 'LibreOffice timeout (>10 λεπτά).', 0
     except Exception as e:
@@ -227,7 +264,7 @@ def clean_pdf(input_path, output_path, yd_id=None):
             kept = removed = 0
 
             for i, page in enumerate(reader.pages):
-                if i % 20 == 0 and _aborted(yd_id):
+                if _aborted(yd_id):
                     raise _Abort()
                 text  = re.sub(r'\s\s+', ' ',
                                (page.extract_text() or '').replace('\n', ' ').strip())
@@ -283,7 +320,7 @@ def create_index(pdf_path, csv_path, yd_id=None):
             count  = 0
 
             for i, page in enumerate(reader.pages):
-                if i % 20 == 0 and _aborted(yd_id):
+                if _aborted(yd_id):
                     raise _Abort()
 
                 tokens = re.sub(
@@ -400,6 +437,12 @@ def run_pipeline(year_data_id: int, flask_app):
                      detail=f'✓ Ολοκληρώθηκε! {count} βεβαιώσεις έτοιμες.')
 
             except _Abort:
+                for path in (raw_pdf, clean_path, csv_path):
+                    try:
+                        if os.path.exists(path):
+                            os.remove(path)
+                    except OSError:
+                        pass
                 yd.processing_status  = 'idle'
                 yd.processing_message = 'Ακυρώθηκε από τον χρήστη.'
                 _set(year_data_id, progress=0, detail='Ακυρώθηκε.')
@@ -413,4 +456,7 @@ def run_pipeline(year_data_id: int, flask_app):
             finally:
                 db.session.commit()
 
-    threading.Thread(target=_run, daemon=True).start()
+    t = threading.Thread(target=_run, daemon=True)
+    with _threads_lock:
+        _threads[year_data_id] = t
+    t.start()

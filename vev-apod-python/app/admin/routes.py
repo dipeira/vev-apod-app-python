@@ -12,7 +12,7 @@ from werkzeug.utils import secure_filename
 from app import db
 from app.admin import admin_bp
 from app.models import User, YearData
-from app.processing.utils import run_pipeline, request_abort, get_state
+from app.processing.utils import run_pipeline, request_abort, get_state, wait_for_abort
 
 
 # ---------------------------------------------------------------------------
@@ -184,10 +184,18 @@ def delete_year(year_id):
         flash('Δεν βρέθηκε εγγραφή.', 'danger')
         return redirect(url_for('admin.dashboard'))
 
+    # If processing is running, abort it and wait for the thread to stop
+    # before touching the files (avoids Windows file-lock 500 errors)
+    if yd.processing_status == 'processing':
+        wait_for_abort(year_id, timeout=15)
+
     import shutil
     year_dir = os.path.join(current_app.config['DATA_FOLDER'], str(yd.year))
     if os.path.isdir(year_dir):
-        shutil.rmtree(year_dir)
+        try:
+            shutil.rmtree(year_dir)
+        except OSError:
+            pass  # files released after thread stops; best-effort cleanup
 
     db.session.delete(yd)
     db.session.commit()
