@@ -64,6 +64,13 @@ def upload():
     year_str = request.form.get('year', '').strip()
     file = request.files.get('excel_file')
 
+    # Fallback: extract year from filename if field is empty
+    if not year_str and file and file.filename:
+        import re as _re
+        m = _re.search(r'(20\d{2})', file.filename)
+        if m:
+            year_str = m.group(1)
+
     if not year_str.isdigit() or not (2000 <= int(year_str) <= 2100):
         flash('Μη έγκυρο έτος.', 'danger')
         return redirect(url_for('admin.dashboard'))
