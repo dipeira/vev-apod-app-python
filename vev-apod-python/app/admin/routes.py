@@ -4,7 +4,7 @@ from functools import wraps
 
 from flask import (
     render_template, redirect, url_for, request,
-    flash, jsonify, current_app
+    flash, jsonify, current_app, make_response
 )
 from flask_login import login_required, current_user
 from werkzeug.utils import secure_filename
@@ -29,6 +29,13 @@ def admin_required(f):
     return decorated
 
 
+def no_cache(response):
+    response.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
+    response.headers['Pragma'] = 'no-cache'
+    response.headers['Expires'] = '0'
+    return response
+
+
 def _allowed_excel(filename):
     exts = current_app.config['ALLOWED_EXCEL_EXTENSIONS']
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in exts
@@ -43,7 +50,7 @@ def _allowed_excel(filename):
 @admin_required
 def dashboard():
     years = YearData.query.order_by(YearData.year.desc()).all()
-    return render_template('admin/dashboard.html', years=years)
+    return no_cache(make_response(render_template('admin/dashboard.html', years=years)))
 
 
 # ---------------------------------------------------------------------------

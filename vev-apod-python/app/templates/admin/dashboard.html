@@ -242,10 +242,6 @@ function updateRow(id, data) {
   }
 }
 
-// ── Stuck detection state ─────────────────────────────────────────────────
-const _lastProg = {}, _lastTime = {};
-const STUCK_MS = 90000; // 90 s without any progress change
-
 // ── Poll status every second while processing ─────────────────────────────
 function poll(yearId) {
   fetch(`/admin/status/${yearId}`)
@@ -253,17 +249,6 @@ function poll(yearId) {
     .then(data => {
       updateRow(yearId, data);
       if (data.status === 'processing') {
-        const now = Date.now(), prog = data.progress ?? 0;
-        if (_lastProg[yearId] !== prog) {
-          _lastProg[yearId] = prog;
-          _lastTime[yearId] = now;
-        } else if (_lastTime[yearId] && (now - _lastTime[yearId]) > STUCK_MS) {
-          const n = document.getElementById(`notice-${yearId}`);
-          if (n) n.innerHTML =
-            '<i class="bi bi-exclamation-triangle-fill me-1 text-warning"></i>' +
-            '<strong>No progress detected.</strong> The process might be stuck. ' +
-            'Please wait or restart the server if this persists.';
-        }
         setTimeout(() => poll(yearId), 1000);
       } else {
         setTimeout(() => location.reload(), 1200);
@@ -280,7 +265,6 @@ document.querySelectorAll('.btn-process').forEach(btn => {
     btn.innerHTML = '<span class="blink"><i class="bi bi-gear me-1"></i>Processing…</span>';
     const n = document.getElementById(`notice-${id}`);
     if (n) { n.innerHTML = '<i class="bi bi-hourglass-split me-1"></i>The process might take a while.'; n.style.display = ''; }
-    _lastProg[id] = 0; _lastTime[id] = Date.now();
     fetch(`/admin/process/${id}`, { method: 'POST' })
       .then(r => r.json())
       .then(data => {
@@ -301,7 +285,6 @@ document.querySelectorAll('.btn-process').forEach(btn => {
 document.querySelectorAll('[id^="badge-"]').forEach(el => {
   if (el.textContent.trim() === 'processing') {
     const yearId = el.id.replace('badge-', '');
-    _lastProg[yearId] = 0; _lastTime[yearId] = Date.now();
     poll(yearId);
   }
 });

@@ -12,6 +12,7 @@ import shutil
 import subprocess
 import tempfile
 import threading
+import time
 import zipfile
 from datetime import datetime
 
@@ -153,7 +154,7 @@ def excel_to_pdf(excel_path, pdf_path, yd_id=None):
     lo_profile_uri = f'file:///{lo_profile_dir.replace(os.sep, "/")}'
 
     try:
-        result = subprocess.run(
+        proc = subprocess.Popen(
             [
                 lo, '--headless',
                 f'-env:UserInstallation={lo_profile_uri}',
@@ -161,11 +162,26 @@ def excel_to_pdf(excel_path, pdf_path, yd_id=None):
                 '--outdir', out_dir,
                 lo_input,
             ],
-            capture_output=True, text=True, timeout=600,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
         )
 
-        if result.returncode != 0:
-            err = (result.stderr or result.stdout or 'Άγνωστο σφάλμα').strip()
+        start = time.time()
+        last_update = start
+        while proc.poll() is None:
+            now = time.time()
+            if now - start > 600:
+                proc.terminate()
+                proc.wait()
+                return False, 'LibreOffice timeout (>10 λεπτά).', 0
+            if now - last_update >= 5:
+                elapsed = int(now - start)
+                _set(yd_id, detail=f'Βήμα 1/3: LibreOffice εκτελείται… ({elapsed}s)')
+                last_update = now
+            time.sleep(0.3)
+
+        stdout_data, stderr_data = proc.communicate()
+        if proc.returncode != 0:
+            err = (stderr_data or stdout_data or 'Άγνωστο σφάλμα').strip()
             return False, f'LibreOffice error: {err}', 0
 
         base   = os.path.splitext(os.path.basename(lo_input))[0]
