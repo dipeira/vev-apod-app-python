@@ -105,6 +105,11 @@
                      style="font-family:monospace; word-break:break-all">
                 </div>
               </div>
+              <!-- Processing notice -->
+              <div id="notice-{{ yd.id }}" class="small text-info mt-1"
+                   style="{{ '' if yd.processing_status=='processing' else 'display:none' }}">
+                <i class="bi bi-hourglass-split me-1"></i>The process might take a while.
+              </div>
             </td>
 
             <td id="count-{{ yd.id }}">
@@ -133,14 +138,6 @@
                         {% if not yd.excel_filename or yd.processing_status=='processing' %}
                         disabled{% endif %}>
                   <i class="bi bi-gear me-1"></i>Process
-                </button>
-
-                <!-- Abort (visible only while processing) -->
-                <button id="btn-abort-{{ yd.id }}"
-                        class="btn btn-sm btn-danger btn-abort"
-                        data-year-id="{{ yd.id }}"
-                        style="{{ '' if yd.processing_status=='processing' else 'display:none' }}">
-                  <i class="bi bi-stop-circle me-1"></i>Abort
                 </button>
 
                 <!-- Delete -->
@@ -172,21 +169,30 @@
 
 
 {% block scripts %}
+<style>
+@keyframes blink-anim { 0%,49%{opacity:1} 50%,100%{opacity:0} }
+.blink { animation: blink-anim 1s linear infinite; }
+</style>
 <script>
 // ── Auto-fill year from filename ──────────────────────────────────────────
+function extractYear(filename) {
+  var m = filename.match(/(20\d{2})/);
+  return m ? m[1] : '';
+}
 document.getElementById('excel_file_input').addEventListener('change', function () {
-  const name = this.files[0]?.name || '';
-  const m = name.match(/\b(20\d{2})\b/);
-  if (m) document.getElementById('year_input').value = m[1];
+  var f = this.files && this.files[0];
+  if (f) { var yr = extractYear(f.name); if (yr) document.getElementById('year_input').value = yr; }
+});
+document.querySelector('form[action*="upload"]').addEventListener('submit', function () {
+  var yi = document.getElementById('year_input');
+  if (!yi.value) {
+    var files = document.getElementById('excel_file_input').files;
+    if (files && files[0]) { var yr = extractYear(files[0].name); if (yr) yi.value = yr; }
+  }
 });
 
 // ── Status colours ────────────────────────────────────────────────────────
-const BG = {
-  idle:       'secondary',
-  processing: 'warning text-dark',
-  done:       'success',
-  error:      'danger',
-};
+const BG = { idle:'secondary', processing:'warning text-dark', done:'success', error:'danger' };
 
 // ── Update a single row's UI ──────────────────────────────────────────────
 function updateRow(id, data) {
@@ -197,48 +203,48 @@ function updateRow(id, data) {
   const detailEl = document.getElementById(`detail-${id}`);
   const countEl  = document.getElementById(`count-${id}`);
   const btnP     = document.getElementById(`btn-process-${id}`);
-  const btnA     = document.getElementById(`btn-abort-${id}`);
+  const noticeEl = document.getElementById(`notice-${id}`);
 
-  // Badge
   badge.className = `badge bg-${BG[data.status] || 'secondary'}`;
   badge.textContent = data.status;
-
-  // DB message
   if (data.message) msgEl.textContent = data.message;
 
-  // Progress bar
   const pct = data.progress ?? 0;
   pbWrap.style.display = '';
 
   if (data.status === 'processing') {
-    pb.className = 'progress-bar progress-bar-striped progress-bar-animated bg-warning';
+    pb.className    = 'progress-bar progress-bar-striped progress-bar-animated bg-warning';
     pb.style.width  = `${pct}%`;
     pb.textContent  = `${pct}%`;
     detailEl.textContent = data.detail || '';
     if (btnP) btnP.disabled = true;
-    if (btnA) btnA.style.display = '';
+    if (noticeEl) noticeEl.style.display = '';
   } else if (data.status === 'done') {
     pb.className   = 'progress-bar bg-success';
     pb.style.width = '100%';
     pb.textContent = '100%';
     detailEl.textContent = data.detail || '';
-    if (btnP) btnP.disabled = false;
-    if (btnA) btnA.style.display = 'none';
+    if (btnP) { btnP.disabled = false; btnP.innerHTML = '<i class="bi bi-gear me-1"></i>Process'; }
+    if (noticeEl) noticeEl.style.display = 'none';
     if (data.employee_count) countEl.textContent = data.employee_count;
   } else {
-    // idle / error
     if (data.status === 'error') {
       pb.className   = 'progress-bar bg-danger';
       pb.style.width = `${pct}%`;
       pb.textContent = `${pct}%`;
       detailEl.textContent = data.detail || '';
+      pbWrap.style.display = '';
     } else {
       pbWrap.style.display = 'none';
     }
-    if (btnP) btnP.disabled = false;
-    if (btnA) btnA.style.display = 'none';
+    if (btnP) { btnP.disabled = false; btnP.innerHTML = '<i class="bi bi-gear me-1"></i>Process'; }
+    if (noticeEl) noticeEl.style.display = 'none';
   }
 }
+
+// ── Stuck detection state ─────────────────────────────────────────────────
+const _lastProg = {}, _lastTime = {};
+const STUCK_MS = 90000; // 90 s without any progress change
 
 // ── Poll status every second while processing ─────────────────────────────
 function poll(yearId) {
@@ -247,9 +253,19 @@ function poll(yearId) {
     .then(data => {
       updateRow(yearId, data);
       if (data.status === 'processing') {
+        const now = Date.now(), prog = data.progress ?? 0;
+        if (_lastProg[yearId] !== prog) {
+          _lastProg[yearId] = prog;
+          _lastTime[yearId] = now;
+        } else if (_lastTime[yearId] && (now - _lastTime[yearId]) > STUCK_MS) {
+          const n = document.getElementById(`notice-${yearId}`);
+          if (n) n.innerHTML =
+            '<i class="bi bi-exclamation-triangle-fill me-1 text-warning"></i>' +
+            '<strong>No progress detected.</strong> The process might be stuck. ' +
+            'Please wait or restart the server if this persists.';
+        }
         setTimeout(() => poll(yearId), 1000);
       } else {
-        // Brief delay then reload to refresh timestamps
         setTimeout(() => location.reload(), 1200);
       }
     })
@@ -261,30 +277,22 @@ document.querySelectorAll('.btn-process').forEach(btn => {
   btn.addEventListener('click', () => {
     const id = btn.dataset.yearId;
     btn.disabled = true;
+    btn.innerHTML = '<span class="blink"><i class="bi bi-gear me-1"></i>Processing…</span>';
+    const n = document.getElementById(`notice-${id}`);
+    if (n) { n.innerHTML = '<i class="bi bi-hourglass-split me-1"></i>The process might take a while.'; n.style.display = ''; }
+    _lastProg[id] = 0; _lastTime[id] = Date.now();
     fetch(`/admin/process/${id}`, { method: 'POST' })
       .then(r => r.json())
       .then(data => {
         if (data.status === 'processing') {
-          updateRow(id, { status: 'processing', progress: 1,
-                          detail: 'Εκκίνηση…', message: 'Έναρξη επεξεργασίας…' });
+          updateRow(id, { status: 'processing', progress: 1, detail: 'Εκκίνηση…', message: 'Έναρξη επεξεργασίας…' });
           poll(id);
         } else {
           alert(data.error || 'Άγνωστο σφάλμα');
           btn.disabled = false;
+          btn.innerHTML = '<i class="bi bi-gear me-1"></i>Process';
+          if (n) n.style.display = 'none';
         }
-      });
-  });
-});
-
-// ── Abort button ──────────────────────────────────────────────────────────
-document.querySelectorAll('.btn-abort').forEach(btn => {
-  btn.addEventListener('click', () => {
-    const id = btn.dataset.yearId;
-    if (!confirm('Να ακυρωθεί η επεξεργασία;')) return;
-    btn.disabled = true;
-    fetch(`/admin/abort/${id}`, { method: 'POST' })
-      .then(() => {
-        document.getElementById(`detail-${id}`).textContent = 'Αίτημα ακύρωσης εστάλη…';
       });
   });
 });
@@ -292,7 +300,9 @@ document.querySelectorAll('.btn-abort').forEach(btn => {
 // ── Auto-poll rows already in "processing" state on page load ─────────────
 document.querySelectorAll('[id^="badge-"]').forEach(el => {
   if (el.textContent.trim() === 'processing') {
-    poll(el.id.replace('badge-', ''));
+    const yearId = el.id.replace('badge-', '');
+    _lastProg[yearId] = 0; _lastTime[yearId] = Date.now();
+    poll(yearId);
   }
 });
 </script>
