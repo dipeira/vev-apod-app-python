@@ -12,7 +12,10 @@ from werkzeug.utils import secure_filename
 from app import db
 from app.admin import admin_bp
 from app.models import User, YearData
-from app.processing.utils import run_pipeline, request_abort, get_state, wait_for_abort
+from app.processing.utils import (
+    run_pipeline, request_abort, get_state, wait_for_abort,
+    claim_processing_slot, is_any_processing,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -124,11 +127,13 @@ def process(year_id):
     if not yd:
         return jsonify({'error': 'Not found'}), 404
 
-    if yd.processing_status == 'processing':
-        return jsonify({'error': 'Η επεξεργασία είναι ήδη σε εξέλιξη.'}), 409
-
     if not yd.excel_filename:
         return jsonify({'error': 'Δεν υπάρχει αρχείο Excel.'}), 400
+
+    if not claim_processing_slot():
+        return jsonify({
+            'error': 'Δεν είναι δυνατή η επεξεργασία. Μια άλλη επεξεργασία είναι ήδη σε εξέλιξη.'
+        }), 409
 
     yd.processing_status = 'processing'
     yd.processing_message = 'Έναρξη επεξεργασίας…'
@@ -151,11 +156,12 @@ def status(year_id):
         return jsonify({'error': 'Not found'}), 404
     state = get_state(year_id)
     return jsonify({
-        'status':         yd.processing_status,
-        'message':        yd.processing_message or '',
-        'progress':       state.get('progress', 0),
-        'detail':         state.get('detail', ''),
-        'employee_count': yd.employee_count,
+        'status':          yd.processing_status,
+        'message':         yd.processing_message or '',
+        'progress':        state.get('progress', 0),
+        'detail':          state.get('detail', ''),
+        'employee_count':  yd.employee_count,
+        'any_processing':  is_any_processing(),
     })
 
 

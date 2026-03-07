@@ -194,6 +194,18 @@ document.querySelector('form[action*="upload"]').addEventListener('submit', func
 // ── Status colours ────────────────────────────────────────────────────────
 const BG = { idle:'secondary', processing:'warning text-dark', done:'success', error:'danger' };
 
+// ── Enable / disable ALL Process buttons ─────────────────────────────────
+function setAllProcessButtons(disabled) {
+  document.querySelectorAll('.btn-process').forEach(b => {
+    if (!disabled) {
+      b.disabled = false;
+      b.innerHTML = '<i class="bi bi-gear me-1"></i>Process';
+    } else {
+      b.disabled = true;
+    }
+  });
+}
+
 // ── Update a single row's UI ──────────────────────────────────────────────
 function updateRow(id, data) {
   const badge    = document.getElementById(`badge-${id}`);
@@ -219,14 +231,15 @@ function updateRow(id, data) {
     detailEl.textContent = data.detail || '';
     if (btnP) btnP.disabled = true;
     if (noticeEl) noticeEl.style.display = '';
+    setAllProcessButtons(true);
   } else if (data.status === 'done') {
     pb.className   = 'progress-bar bg-success';
     pb.style.width = '100%';
     pb.textContent = '100%';
     detailEl.textContent = data.detail || '';
-    if (btnP) { btnP.disabled = false; btnP.innerHTML = '<i class="bi bi-gear me-1"></i>Process'; }
     if (noticeEl) noticeEl.style.display = 'none';
     if (data.employee_count) countEl.textContent = data.employee_count;
+    if (!data.any_processing) setAllProcessButtons(false);
   } else {
     if (data.status === 'error') {
       pb.className   = 'progress-bar bg-danger';
@@ -237,8 +250,8 @@ function updateRow(id, data) {
     } else {
       pbWrap.style.display = 'none';
     }
-    if (btnP) { btnP.disabled = false; btnP.innerHTML = '<i class="bi bi-gear me-1"></i>Process'; }
     if (noticeEl) noticeEl.style.display = 'none';
+    if (!data.any_processing) setAllProcessButtons(false);
   }
 }
 
@@ -261,20 +274,19 @@ function poll(yearId) {
 document.querySelectorAll('.btn-process').forEach(btn => {
   btn.addEventListener('click', () => {
     const id = btn.dataset.yearId;
-    btn.disabled = true;
+    setAllProcessButtons(true);
     btn.innerHTML = '<span class="blink"><i class="bi bi-gear me-1"></i>Processing…</span>';
     const n = document.getElementById(`notice-${id}`);
     if (n) { n.innerHTML = '<i class="bi bi-hourglass-split me-1"></i>The process might take a while.'; n.style.display = ''; }
     fetch(`/admin/process/${id}`, { method: 'POST' })
-      .then(r => r.json())
-      .then(data => {
-        if (data.status === 'processing') {
-          updateRow(id, { status: 'processing', progress: 1, detail: 'Εκκίνηση…', message: 'Έναρξη επεξεργασίας…' });
+      .then(r => r.json().then(data => ({ ok: r.ok, data })))
+      .then(({ ok, data }) => {
+        if (ok && data.status === 'processing') {
+          updateRow(id, { status: 'processing', progress: 1, detail: 'Εκκίνηση…', message: 'Έναρξη επεξεργασίας…', any_processing: true });
           poll(id);
         } else {
           alert(data.error || 'Άγνωστο σφάλμα');
-          btn.disabled = false;
-          btn.innerHTML = '<i class="bi bi-gear me-1"></i>Process';
+          setAllProcessButtons(false);
           if (n) n.style.display = 'none';
         }
       });
@@ -285,6 +297,7 @@ document.querySelectorAll('.btn-process').forEach(btn => {
 document.querySelectorAll('[id^="badge-"]').forEach(el => {
   if (el.textContent.trim() === 'processing') {
     const yearId = el.id.replace('badge-', '');
+    setAllProcessButtons(true);
     poll(yearId);
   }
 });

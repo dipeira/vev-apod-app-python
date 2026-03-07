@@ -31,6 +31,31 @@ _state_lock = threading.Lock()
 _threads: dict = {}          # year_data_id → Thread
 _threads_lock = threading.Lock()
 
+# Global processing slot — only one pipeline may run at a time
+_processing_lock = threading.Lock()
+
+
+def claim_processing_slot() -> bool:
+    """Try to claim the global processing slot. Returns True if successful."""
+    return _processing_lock.acquire(blocking=False)
+
+
+def release_processing_slot():
+    """Release the global processing slot (called from the pipeline thread)."""
+    try:
+        _processing_lock.release()
+    except RuntimeError:
+        pass  # already released
+
+
+def is_any_processing() -> bool:
+    """Return True if a pipeline is currently running."""
+    acquired = _processing_lock.acquire(blocking=False)
+    if acquired:
+        _processing_lock.release()
+        return False
+    return True
+
 
 def _set(yd_id, **kw):
     if yd_id is None:
@@ -479,95 +504,99 @@ def create_index_from_xlsx(xlsx_path, clean_pdf_path, csv_path, yd_id=None):
 # ---------------------------------------------------------------------------
 def run_pipeline(year_data_id: int, flask_app):
     def _run():
-        with flask_app.app_context():
-            from app import db
-            from app.models import YearData
+        try:
+            with flask_app.app_context():
+                from app import db
+                from app.models import YearData
 
-            yd = db.session.get(YearData, year_data_id)
-            if not yd:
-                return
+                yd = db.session.get(YearData, year_data_id)
+                if not yd:
+                    return
 
-            _set(year_data_id, progress=0, detail='Προετοιμασία…', abort=False)
+                _set(year_data_id, progress=0, detail='Προετοιμασία…', abort=False)
 
-            data_folder = flask_app.config['DATA_FOLDER']
-            year        = yd.year
-            ydir        = os.path.join(data_folder, str(year))
-            excel_path  = os.path.join(ydir, 'excel', yd.excel_filename)
-            raw_pdf     = os.path.join(ydir, 'pdf',   f'{year}_raw.pdf')
-            clean_path  = os.path.join(ydir, 'pdf',   f'{year}_clean.pdf')
-            csv_path    = os.path.join(ydir, 'csv',   f'{year}.csv')
+                data_folder = flask_app.config['DATA_FOLDER']
+                year        = yd.year
+                ydir        = os.path.join(data_folder, str(year))
+                excel_path  = os.path.join(ydir, 'excel', yd.excel_filename)
+                raw_pdf     = os.path.join(ydir, 'pdf',   f'{year}_raw.pdf')
+                clean_path  = os.path.join(ydir, 'pdf',   f'{year}_clean.pdf')
+                csv_path    = os.path.join(ydir, 'csv',   f'{year}.csv')
 
-            try:
-                # ── Step 1: Excel → PDF (LibreOffice, landscape) ──────────
-                _set(year_data_id, progress=0,
-                     detail='Βήμα 1/3: Εκκίνηση LibreOffice (landscape)…')
-                yd.processing_message = 'Βήμα 1/3: Μετατροπή Excel → PDF (landscape)…'
-                db.session.commit()
+                try:
+                    # ── Step 1: Excel → PDF (LibreOffice, landscape) ──────────
+                    _set(year_data_id, progress=0,
+                         detail='Βήμα 1/3: Εκκίνηση LibreOffice (landscape)…')
+                    yd.processing_message = 'Βήμα 1/3: Μετατροπή Excel → PDF (landscape)…'
+                    db.session.commit()
 
-                ok, msg, pages = excel_to_pdf(excel_path, raw_pdf, year_data_id)
-                if not ok:
-                    raise RuntimeError(msg)
+                    ok, msg, pages = excel_to_pdf(excel_path, raw_pdf, year_data_id)
+                    if not ok:
+                        raise RuntimeError(msg)
 
-                yd.processing_message = f'✓ Βήμα 1/3: {msg}'
-                db.session.commit()
+                    yd.processing_message = f'✓ Βήμα 1/3: {msg}'
+                    db.session.commit()
 
-                # ── Step 2: Clean blank pages ─────────────────────────────
-                _set(year_data_id, progress=34,
-                     detail='Βήμα 2/3: Καθαρισμός κενών σελίδων…')
-                yd.processing_message = 'Βήμα 2/3: Καθαρισμός κενών σελίδων…'
-                db.session.commit()
+                    # ── Step 2: Clean blank pages ─────────────────────────────
+                    _set(year_data_id, progress=34,
+                         detail='Βήμα 2/3: Καθαρισμός κενών σελίδων…')
+                    yd.processing_message = 'Βήμα 2/3: Καθαρισμός κενών σελίδων…'
+                    db.session.commit()
 
-                ok, msg, kept = clean_pdf(raw_pdf, clean_path, year_data_id)
-                if not ok:
-                    raise RuntimeError(msg)
+                    ok, msg, kept = clean_pdf(raw_pdf, clean_path, year_data_id)
+                    if not ok:
+                        raise RuntimeError(msg)
 
-                yd.processing_message = f'✓ Βήμα 2/3: {msg}'
-                db.session.commit()
+                    yd.processing_message = f'✓ Βήμα 2/3: {msg}'
+                    db.session.commit()
 
-                # ── Step 3: Create CSV index ───────────────────────────────
-                _set(year_data_id, progress=67,
-                     detail='Βήμα 3/3: Δημιουργία ευρετηρίου…')
-                yd.processing_message = 'Βήμα 3/3: Δημιουργία ευρετηρίου…'
-                db.session.commit()
+                    # ── Step 3: Create CSV index ───────────────────────────────
+                    _set(year_data_id, progress=67,
+                         detail='Βήμα 3/3: Δημιουργία ευρετηρίου…')
+                    yd.processing_message = 'Βήμα 3/3: Δημιουργία ευρετηρίου…'
+                    db.session.commit()
 
-                ext = os.path.splitext(yd.excel_filename)[1].lower()
-                if ext in ('.xlsx', '.xlsm'):
-                    ok, msg, count = create_index_from_xlsx(
-                        excel_path, clean_path, csv_path, year_data_id
-                    )
-                else:
-                    ok, msg, count = create_index(clean_path, csv_path, year_data_id)
-                if not ok:
-                    raise RuntimeError(msg)
+                    ext = os.path.splitext(yd.excel_filename)[1].lower()
+                    if ext in ('.xlsx', '.xlsm'):
+                        ok, msg, count = create_index_from_xlsx(
+                            excel_path, clean_path, csv_path, year_data_id
+                        )
+                    else:
+                        ok, msg, count = create_index(clean_path, csv_path, year_data_id)
+                    if not ok:
+                        raise RuntimeError(msg)
 
-                yd.pdf_filename       = f'{year}_clean.pdf'
-                yd.csv_filename       = f'{year}.csv'
-                yd.employee_count     = count
-                yd.processing_status  = 'done'
-                yd.processing_message = f'✓ Ολοκληρώθηκε. {count} εγγραφές.'
-                yd.processed_at       = datetime.utcnow()
-                _set(year_data_id, progress=100,
-                     detail=f'✓ Ολοκληρώθηκε! {count} βεβαιώσεις έτοιμες.')
+                    yd.pdf_filename       = f'{year}_clean.pdf'
+                    yd.csv_filename       = f'{year}.csv'
+                    yd.employee_count     = count
+                    yd.processing_status  = 'done'
+                    yd.processing_message = f'✓ Ολοκληρώθηκε. {count} εγγραφές.'
+                    yd.processed_at       = datetime.utcnow()
+                    _set(year_data_id, progress=100,
+                         detail=f'✓ Ολοκληρώθηκε! {count} βεβαιώσεις έτοιμες.')
 
-            except _Abort:
-                for path in (raw_pdf, clean_path, csv_path):
-                    try:
-                        if os.path.exists(path):
-                            os.remove(path)
-                    except OSError:
-                        pass
-                yd.processing_status  = 'idle'
-                yd.processing_message = 'Ακυρώθηκε από τον χρήστη.'
-                _set(year_data_id, progress=0, detail='Ακυρώθηκε.')
+                except _Abort:
+                    for path in (raw_pdf, clean_path, csv_path):
+                        try:
+                            if os.path.exists(path):
+                                os.remove(path)
+                        except OSError:
+                            pass
+                    yd.processing_status  = 'idle'
+                    yd.processing_message = 'Ακυρώθηκε από τον χρήστη.'
+                    _set(year_data_id, progress=0, detail='Ακυρώθηκε.')
 
-            except Exception as exc:
-                logger.exception('Pipeline failed for year %s', yd.year)
-                yd.processing_status  = 'error'
-                yd.processing_message = str(exc)
-                _set(year_data_id, progress=0, detail=f'Σφάλμα: {exc}')
+                except Exception as exc:
+                    logger.exception('Pipeline failed for year %s', yd.year)
+                    yd.processing_status  = 'error'
+                    yd.processing_message = str(exc)
+                    _set(year_data_id, progress=0, detail=f'Σφάλμα: {exc}')
 
-            finally:
-                db.session.commit()
+                finally:
+                    db.session.commit()
+
+        finally:
+            release_processing_slot()
 
     t = threading.Thread(target=_run, daemon=True)
     with _threads_lock:
