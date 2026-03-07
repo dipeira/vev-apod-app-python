@@ -115,10 +115,7 @@ def _find_libreoffice():
 # ---------------------------------------------------------------------------
 _PGSETUP_RE1 = re.compile(rb'<pageSetup[^/]*/>', re.DOTALL)
 _PGSETUP_RE2 = re.compile(rb'<pageSetup[^>]*>.*?</pageSetup>', re.DOTALL)
-_LANDSCAPE_TAG = (
-    b'<pageSetup orientation="landscape" '
-    b'fitToPage="1" fitToWidth="1" fitToHeight="1"/>'
-)
+_LANDSCAPE_TAG = b'<pageSetup orientation="landscape"/>'
 
 
 def _xlsx_set_landscape(src_path: str, dst_path: str):
@@ -368,6 +365,116 @@ def create_index(pdf_path, csv_path, yd_id=None):
 
 
 # ---------------------------------------------------------------------------
+# Step 3b: Create CSV index from Excel (used for .xlsx uploads)
+# ---------------------------------------------------------------------------
+def create_index_from_xlsx(xlsx_path, clean_pdf_path, csv_path, yd_id=None):
+    """
+    For XLSX files: PyPDF2 cannot reliably extract both AFM and AMKA from the
+    LibreOffice-generated PDF (data is split across 2 pages per employee).
+
+    Instead, read AFM+AMKA directly from the Excel file using openpyxl, then
+    map each employee to their PDF page range (2 consecutive pages).
+
+    CSV format: afm;amka;page;num_pages
+      page      = first PDF page of the certificate (1-based, odd)
+      num_pages = pages to extract for that certificate (always 2 for XLSX)
+
+    Returns (success, msg, matched_count).
+    """
+    import openpyxl
+
+    PAGES_PER_CERT = 2
+
+    try:
+        wb = openpyxl.load_workbook(xlsx_path, read_only=True, data_only=True)
+        records = []
+
+        for ws in wb.worksheets:
+            for row in ws.iter_rows(values_only=True):
+                if _aborted(yd_id):
+                    raise _Abort()
+
+                afm = amka = ''
+                for val in row:
+                    if val is None or isinstance(val, bool):
+                        continue
+                    # Normalise to string — integers lose no precision
+                    if isinstance(val, float):
+                        int_val = int(val)
+                        if float(int_val) != val:
+                            continue  # has decimal part — not an ID
+                        s = str(int_val)
+                    elif isinstance(val, int):
+                        s = str(val)
+                    else:
+                        s = str(val).strip()
+
+                    # AFM: exactly 9 digits — keep overwriting (take last match)
+                    if re.fullmatch(r'\d{9}', s):
+                        afm = s.lstrip('0')
+                    # AMKA: exactly 11 digits — take first match
+                    elif re.fullmatch(r'\d{11}', s) and not amka:
+                        amka = s.lstrip('0')
+
+                if afm and amka:
+                    records.append((afm, amka))
+
+        wb.close()
+
+        if not records:
+            return False, 'Δεν βρέθηκαν εγγραφές ΑΦΜ+ΑΜΚΑ στο αρχείο Excel.', 0
+
+        # Determine pages-per-certificate from actual PDF page count
+        with open(clean_pdf_path, 'rb') as f:
+            total_pages = len(PyPDF2.PdfReader(f).pages)
+
+        n = len(records)
+        if total_pages == n:
+            PAGES_PER_CERT = 1
+        elif total_pages == n * 2:
+            PAGES_PER_CERT = 2
+        else:
+            logger.warning(
+                'create_index_from_xlsx: PDF has %d pages, records=%d '
+                '(not 1× or 2×). Falling back to PDF scan.',
+                total_pages, n
+            )
+            _set(yd_id, detail=(
+                f'Βήμα 3/3: Αναντιστοιχία σελίδων ({total_pages} PDF, {n} εγγραφές). Σάρωση PDF…'
+            ))
+            return create_index(clean_pdf_path, csv_path, yd_id)
+
+        logger.info('create_index_from_xlsx: %d employees, %d pages/cert', n, PAGES_PER_CERT)
+
+        # Write CSV: afm;amka;page;num_pages
+        rows = [['afm', 'amka', 'page', 'num_pages']]
+        for i, (afm, amka) in enumerate(records):
+            page_start = i * PAGES_PER_CERT + 1  # 1-based; works for both 1 and 2 pages/cert
+            rows.append([afm, amka, page_start, PAGES_PER_CERT])
+
+            if i % 100 == 0 or i == len(records) - 1:
+                pct = 66 + int((i + 1) / len(records) * 34)
+                _set(yd_id, progress=min(pct, 99),
+                     detail=(f'Βήμα 3/3: Εγγραφή {i+1}/{len(records)}  '
+                             f'ΑΦΜ: {afm or "—"}  ΑΜΚΑ: {amka or "—"}'))
+
+        os.makedirs(os.path.dirname(csv_path), exist_ok=True)
+        with open(csv_path, 'w', newline='', encoding='utf-8') as f:
+            writer = csv.writer(f, delimiter=';')
+            writer.writerows(rows)
+
+        return (True,
+                f'{len(records)} εγγραφές (Excel-indexing, {PAGES_PER_CERT} σελίδες/βεβαίωση).',
+                len(records))
+
+    except _Abort:
+        raise
+    except Exception as e:
+        logger.exception('create_index_from_xlsx failed')
+        return False, str(e), 0
+
+
+# ---------------------------------------------------------------------------
 # Full pipeline (background thread)
 # ---------------------------------------------------------------------------
 def run_pipeline(year_data_id: int, flask_app):
@@ -423,7 +530,13 @@ def run_pipeline(year_data_id: int, flask_app):
                 yd.processing_message = 'Βήμα 3/3: Δημιουργία ευρετηρίου…'
                 db.session.commit()
 
-                ok, msg, count = create_index(clean_path, csv_path, year_data_id)
+                ext = os.path.splitext(yd.excel_filename)[1].lower()
+                if ext in ('.xlsx', '.xlsm'):
+                    ok, msg, count = create_index_from_xlsx(
+                        excel_path, clean_path, csv_path, year_data_id
+                    )
+                else:
+                    ok, msg, count = create_index(clean_path, csv_path, year_data_id)
                 if not ok:
                     raise RuntimeError(msg)
 

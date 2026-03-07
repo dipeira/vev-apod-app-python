@@ -12,7 +12,8 @@ from app.models import YearData
 
 
 def _search_csv(csv_path, afm, amka):
-    """Return page number (1-based) or None if not found."""
+    """Return (page, num_pages) or None if not found.
+    Supports both 3-column (XLS) and 4-column (XLSX) CSV formats."""
     try:
         with open(csv_path, newline='', encoding='utf-8') as f:
             reader = csv.reader(f, delimiter=';')
@@ -23,18 +24,21 @@ def _search_csv(csv_path, afm, amka):
                 row_afm = row[0].strip().lstrip('0')
                 row_amka = row[1].strip().lstrip('0')
                 if row_afm == afm and row_amka == amka:
-                    return int(row[2])
+                    page = int(row[2])
+                    num_pages = int(row[3]) if len(row) >= 4 and row[3].strip() else 1
+                    return page, num_pages
     except Exception:
         pass
     return None
 
 
-def _extract_page(pdf_path, page_number):
-    """Extract a single page (1-based) from a PDF and return bytes."""
+def _extract_page(pdf_path, page_number, num_pages=1):
+    """Extract one or more consecutive pages (1-based) from a PDF and return bytes."""
     with open(pdf_path, 'rb') as f:
         reader = PyPDF2.PdfReader(f)
         writer = PyPDF2.PdfWriter()
-        writer.add_page(reader.pages[page_number - 1])
+        for p in range(page_number - 1, min(page_number - 1 + num_pages, len(reader.pages))):
+            writer.add_page(reader.pages[p])
         buf = io.BytesIO()
         writer.write(buf)
         buf.seek(0)
@@ -66,14 +70,15 @@ def index():
 
         data_folder = current_app.config['DATA_FOLDER']
         csv_path = yd.csv_path(data_folder)
-        page_num = _search_csv(csv_path, afm, amka)
+        result = _search_csv(csv_path, afm, amka)
 
-        if not page_num:
+        if not result:
             flash('Δεν βρέθηκαν στοιχεία για τα δεδομένα που εισάγατε.', 'danger')
             return render_template('employee/index.html', years=years)
 
+        page_num, num_pages = result
         pdf_path = yd.pdf_path(data_folder)
-        buf = _extract_page(pdf_path, page_num)
+        buf = _extract_page(pdf_path, page_num, num_pages)
         return send_file(
             buf,
             mimetype='application/pdf',
