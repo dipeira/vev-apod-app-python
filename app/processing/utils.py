@@ -228,7 +228,9 @@ def excel_to_pdf(excel_path, pdf_path, yd_id=None):
             ],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
             start_new_session=True,   # creates a process group on Linux
-            env={**os.environ, 'HOME': lo_profile_dir},  # give LO a clean home dir
+            # On Linux/Docker only: give LO a clean home dir so it doesn't touch
+            # the real user home. On Windows LO uses APPDATA/USERPROFILE, not HOME.
+            env={**os.environ, 'HOME': lo_profile_dir} if sys.platform != 'win32' else None,
         )
 
         start = time.time()
