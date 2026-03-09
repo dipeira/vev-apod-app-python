@@ -48,19 +48,11 @@ Check that the **Εγγραφές** (Records) count matches the expected number 
 
 ---
 
-## Aborting a Running Job
-
-1. While a job is processing, click the **Abort** button (if visible) or navigate to the Dashboard and wait — the abort option is available via the API at `/admin/abort/<id>`.
-2. The pipeline stops within a few seconds and the status returns to `idle`.
-3. Intermediate files (raw PDF, clean PDF, CSV) are deleted automatically after an abort.
-
----
-
 ## Deleting a Year's Data
 
 1. Click the trash icon in the **Ενέργειες** column for the year you want to remove.
 2. Confirm the deletion prompt.
-3. If a processing job is running for that year, it is aborted first, then all files and the database record are deleted.
+3. If a processing job is running for that year, it is automatically stopped before the files are removed. The pipeline stops within a few seconds and all intermediate files (raw PDF, clean PDF, CSV) are deleted along with the database record.
 
 > **Warning**: This permanently deletes the Excel file, all generated PDFs, and the CSV index for that year. Employees will no longer be able to download certificates for that year.
 

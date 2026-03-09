@@ -11,7 +11,7 @@ A Flask web application that allows employees to download their salary certifica
 - **Excel ingestion**: administrators upload `.xls` or `.xlsx` payroll files (up to 200 MB)
 - **Automated processing pipeline**: LibreOffice converts Excel to PDF, blank pages are stripped, and a searchable CSV index is built — all in a background thread with real-time progress displayed on the dashboard
 - **Process locking**: only one processing job can run at a time; all Process buttons are disabled while a job is in progress
-- **Abort & delete**: administrators can abort a running job or delete a year's data at any time
+- **Safe delete**: deleting a year during processing automatically stops the running job before removing files
 - **User management**: administrators can create, delete, and change passwords for other users
 - **Docker-ready**: ships with `Dockerfile`, `docker-compose.yml`, and an nginx reverse proxy configuration
 

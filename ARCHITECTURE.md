@@ -9,7 +9,7 @@ Browser
   |
   | HTTP
   v
-nginx  (Docker only — port 8085 → 5000)
+nginx  (Docker only — host port 8085 → container port 80)
   |
   v
 Gunicorn / Flask dev server  (port 5000)

@@ -5,7 +5,7 @@ The application ships with a `Dockerfile`, `docker-compose.yml`, and `nginx.conf
 ## Architecture
 
 ```
-Internet → nginx (port 8085) → Gunicorn (port 5000, internal)
+Internet → nginx (host:8085 → container:80) → Gunicorn (port 5000, internal)
                                     |
                           Flask application
                                     |
@@ -13,7 +13,7 @@ Internet → nginx (port 8085) → Gunicorn (port 5000, internal)
                     File data (app_data volume)
 ```
 
-- **nginx** handles incoming HTTP on port 8085, proxies all requests to the Flask/Gunicorn container
+- **nginx** listens on container port 80 (mapped from host port 8085), proxies all requests to the Flask/Gunicorn container
 - **Gunicorn** runs 2 workers with a 600-second timeout (accommodates long LibreOffice conversions)
 - **Two Docker volumes** persist data across container restarts: `app_data` and `app_instance`
 

@@ -106,9 +106,10 @@ In Docker, LibreOffice is installed automatically via the Dockerfile.
 **Cause**: The background thread may have crashed silently, or LibreOffice is hung.
 
 **Fix**:
-1. Click the Abort button on the dashboard, or restart the server
-2. Check server logs for errors
-3. The processing slot is released when the thread exits (including on crash via the `finally` block)
+
+1. Delete the year from the dashboard (the trash icon) — this automatically stops the running job before removing files
+2. Alternatively, restart the server — the processing slot is released on startup
+3. Check server logs for errors; the processing slot is always released via the `finally` block even on crash
 
 ---
 
