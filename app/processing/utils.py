@@ -205,12 +205,18 @@ def excel_to_pdf(excel_path, pdf_path, yd_id=None):
 
     # Private temp profile prevents concurrent-run conflicts in LibreOffice
     lo_profile_dir = tempfile.mkdtemp(prefix='lo_profile_')
-    lo_profile_uri = f'file:///{lo_profile_dir.replace(os.sep, "/")}'
+    # Build a correct file:// URI for both Linux (/tmp/...) and Windows (C:\...)
+    lo_profile_posix = lo_profile_dir.replace(os.sep, '/')
+    if not lo_profile_posix.startswith('/'):
+        lo_profile_posix = '/' + lo_profile_posix   # Windows: /C:/...
+    lo_profile_uri = f'file://{lo_profile_posix}'   # file:///tmp/... or file:///C:/...
 
     try:
         proc = subprocess.Popen(
             [
                 lo, '--headless',
+                '--norestore',           # don't try to recover stale sessions
+                '--nofirststartwizard',  # skip setup wizard on fresh profile dirs
                 f'-env:UserInstallation={lo_profile_uri}',
                 '--convert-to', 'pdf',
                 '--outdir', out_dir,
@@ -218,6 +224,7 @@ def excel_to_pdf(excel_path, pdf_path, yd_id=None):
             ],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
             start_new_session=True,   # creates a process group on Linux
+            env={**os.environ, 'HOME': lo_profile_dir},  # give LO a clean home dir
         )
 
         start = time.time()
@@ -227,9 +234,9 @@ def excel_to_pdf(excel_path, pdf_path, yd_id=None):
                 _kill_proc(proc)
                 raise _Abort()
             now = time.time()
-            if now - start > 600:
+            if now - start > 1200:
                 _kill_proc(proc)
-                return False, 'LibreOffice timeout (>10 λεπτά).', 0
+                return False, 'LibreOffice timeout (>20 λεπτά).', 0
             if now - last_update >= 5:
                 elapsed = int(now - start)
                 _set(yd_id, detail=f'Βήμα 1/3: LibreOffice εκτελείται… ({elapsed}s)')
@@ -260,7 +267,7 @@ def excel_to_pdf(excel_path, pdf_path, yd_id=None):
     except _Abort:
         raise
     except subprocess.TimeoutExpired:
-        return False, 'LibreOffice timeout (>10 λεπτά).', 0
+        return False, 'LibreOffice timeout (>20 λεπτά).', 0
     except Exception as e:
         logger.exception('excel_to_pdf failed')
         return False, str(e), 0
