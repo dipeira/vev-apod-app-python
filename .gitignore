@@ -1,3 +1,10 @@
-cleanPdf-dias/
-createIndexFromPdf-dias
-vev-apod
+.env
+instance/
+data/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+dist/
+build/
