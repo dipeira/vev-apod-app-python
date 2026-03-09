@@ -215,6 +215,12 @@ def excel_to_pdf(excel_path, pdf_path, yd_id=None):
         lo_profile_posix = '/' + lo_profile_posix   # Windows: /C:/...
     lo_profile_uri = f'file://{lo_profile_posix}'   # file:///tmp/... or file:///C:/...
 
+    # Kill any stale soffice processes left from a previous timed-out run.
+    # On Linux only — on Windows this would be too aggressive.
+    if sys.platform != 'win32':
+        subprocess.run(['pkill', '-9', '-f', 'soffice'], capture_output=True)
+        time.sleep(0.5)  # give the OS a moment to reap them
+
     try:
         proc = subprocess.Popen(
             [
