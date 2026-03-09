@@ -7,6 +7,7 @@ services:
       - DATABASE_URL=sqlite:////app/instance/app.db
       - DATA_FOLDER=/app/data
       - ORG_NAME=${ORG_NAME:-Διεύθυνση Π.Ε. Ηρακλείου}
+      - TZ=Europe/Athens
     volumes:
       - app_data:/app/data
       - app_instance:/app/instance

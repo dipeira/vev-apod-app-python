@@ -5,4 +5,5 @@ Werkzeug==3.0.3
 SQLAlchemy==2.0.30
 PyPDF2==3.0.1
 openpyxl==3.1.2
+tzdata
 gunicorn==22.0.0

@@ -1,5 +1,5 @@
 import os
-from datetime import datetime
+from app.models import _now_athens
 from functools import wraps
 
 from flask import (
@@ -100,13 +100,13 @@ def upload():
         yd.excel_filename = filename
         yd.processing_status = 'idle'
         yd.processing_message = None
-        yd.uploaded_at = datetime.utcnow()
+        yd.uploaded_at = _now_athens()
     else:
         yd = YearData(
             year=year,
             excel_filename=filename,
             processing_status='idle',
-            uploaded_at=datetime.utcnow(),
+            uploaded_at=_now_athens(),
         )
         db.session.add(yd)
 

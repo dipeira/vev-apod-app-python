@@ -17,6 +17,10 @@ import threading
 import time
 import zipfile
 from datetime import datetime
+from zoneinfo import ZoneInfo
+
+def _now_athens():
+    return datetime.now(ZoneInfo('Europe/Athens')).replace(tzinfo=None)
 
 import PyPDF2
 
@@ -578,7 +582,7 @@ def run_pipeline(year_data_id: int, flask_app):
                     yd.employee_count     = count
                     yd.processing_status  = 'done'
                     yd.processing_message = f'✓ Ολοκληρώθηκε. {count} εγγραφές.'
-                    yd.processed_at       = datetime.utcnow()
+                    yd.processed_at       = _now_athens()
                     _set(year_data_id, progress=100,
                          detail=f'✓ Ολοκληρώθηκε! {count} βεβαιώσεις έτοιμες.')
 
