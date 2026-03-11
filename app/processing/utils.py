@@ -409,15 +409,65 @@ def create_index(pdf_path, csv_path, yd_id=None):
 
 
 # ---------------------------------------------------------------------------
-# Step 3b: Create CSV index from Excel (used for .xlsx uploads)
+# Step 3b: Create CSV index from Excel (Strategy B)
 # ---------------------------------------------------------------------------
-def create_index_from_xlsx(xlsx_path, clean_pdf_path, csv_path, yd_id=None):
+def _convert_xls_to_xlsx(xls_path):
     """
-    For XLSX files: PyPDF2 cannot reliably extract both AFM and AMKA from the
-    LibreOffice-generated PDF (data is split across 2 pages per employee).
+    Convert .xls to .xlsx using LibreOffice (headless) so openpyxl can read it.
+    Returns path to a temporary .xlsx file.
+    """
+    lo = _find_libreoffice()
+    if not lo:
+        raise RuntimeError('LibreOffice not found for .xls conversion')
 
-    Instead, read AFM+AMKA directly from the Excel file using openpyxl, then
-    map each employee to their PDF page range (2 consecutive pages).
+    tmp_dir = tempfile.mkdtemp(prefix='xls2xlsx_')
+    lo_profile_dir = tempfile.mkdtemp(prefix='lo_profile_conv_')
+    
+    # Build profile URI
+    lo_profile_posix = lo_profile_dir.replace(os.sep, '/')
+    if not lo_profile_posix.startswith('/'):
+        lo_profile_posix = '/' + lo_profile_posix
+    lo_profile_uri = f'file://{lo_profile_posix}'
+
+    try:
+        if sys.platform != 'win32':
+            subprocess.run(['pkill', '-9', '-f', 'soffice'], capture_output=True)
+
+        subprocess.run(
+            [
+                lo, '--headless', '--norestore', '--nofirststartwizard',
+                f'-env:UserInstallation={lo_profile_uri}',
+                '--convert-to', 'xlsx',
+                '--outdir', tmp_dir,
+                xls_path,
+            ],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            check=True, timeout=300,
+            env={**os.environ, 'HOME': lo_profile_dir} if sys.platform != 'win32' else None,
+        )
+
+        out_name = os.path.splitext(os.path.basename(xls_path))[0] + '.xlsx'
+        out_path = os.path.join(tmp_dir, out_name)
+        if not os.path.exists(out_path):
+            raise RuntimeError('LibreOffice conversion failed (no output file)')
+        
+        # Move to a standalone temp file
+        fd, final_path = tempfile.mkstemp(suffix='.xlsx', prefix='converted_')
+        os.close(fd)
+        shutil.move(out_path, final_path)
+        return final_path
+
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        shutil.rmtree(lo_profile_dir, ignore_errors=True)
+
+
+def create_index_from_excel(excel_path, clean_pdf_path, csv_path, yd_id=None):
+    """
+    Strategy B: Read AFM+AMKA directly from the Excel file (XLS or XLSX),
+    then map each employee to their PDF page range.
+    
+    For .xls files, they are converted to temporary .xlsx first.
 
     CSV format: afm;amka;page;num_pages
       page      = first PDF page of the certificate (1-based, odd)
@@ -428,9 +478,21 @@ def create_index_from_xlsx(xlsx_path, clean_pdf_path, csv_path, yd_id=None):
     import openpyxl
 
     PAGES_PER_CERT = 2
+    temp_xlsx = None
+    target_path = excel_path
 
     try:
-        wb = openpyxl.load_workbook(xlsx_path, read_only=True, data_only=True)
+        # If .xls, convert to .xlsx temp file
+        if excel_path.lower().endswith('.xls'):
+            try:
+                _set(yd_id, detail='Βήμα 3/3: Μετατροπή .xls σε .xlsx για ανάγνωση δεδομένων…')
+                temp_xlsx = _convert_xls_to_xlsx(excel_path)
+                target_path = temp_xlsx
+            except Exception as e:
+                logger.warning('Could not convert .xls to .xlsx: %s', e)
+                return create_index(clean_pdf_path, csv_path, yd_id)
+
+        wb = openpyxl.load_workbook(target_path, read_only=True, data_only=True)
         records = []
 
         for ws in wb.worksheets:
@@ -479,7 +541,7 @@ def create_index_from_xlsx(xlsx_path, clean_pdf_path, csv_path, yd_id=None):
             PAGES_PER_CERT = 2
         else:
             logger.warning(
-                'create_index_from_xlsx: PDF has %d pages, records=%d '
+                'create_index_from_excel: PDF has %d pages, records=%d '
                 '(not 1× or 2×). Falling back to PDF scan.',
                 total_pages, n
             )
@@ -488,7 +550,7 @@ def create_index_from_xlsx(xlsx_path, clean_pdf_path, csv_path, yd_id=None):
             ))
             return create_index(clean_pdf_path, csv_path, yd_id)
 
-        logger.info('create_index_from_xlsx: %d employees, %d pages/cert', n, PAGES_PER_CERT)
+        logger.info('create_index_from_excel: %d employees, %d pages/cert', n, PAGES_PER_CERT)
 
         # Write CSV: afm;amka;page;num_pages
         rows = [['afm', 'amka', 'page', 'num_pages']]
@@ -514,9 +576,12 @@ def create_index_from_xlsx(xlsx_path, clean_pdf_path, csv_path, yd_id=None):
     except _Abort:
         raise
     except Exception as e:
-        logger.exception('create_index_from_xlsx failed')
+        logger.exception('create_index_from_excel failed')
         return False, str(e), 0
-
+    finally:
+        if temp_xlsx and os.path.exists(temp_xlsx):
+            try: os.remove(temp_xlsx)
+            except OSError: pass
 
 # ---------------------------------------------------------------------------
 # Full pipeline (background thread)
@@ -575,13 +640,9 @@ def run_pipeline(year_data_id: int, flask_app):
                     yd.processing_message = 'Βήμα 3/3: Δημιουργία ευρετηρίου…'
                     db.session.commit()
 
-                    ext = os.path.splitext(yd.excel_filename)[1].lower()
-                    if ext in ('.xlsx', '.xlsm'):
-                        ok, msg, count = create_index_from_xlsx(
-                            excel_path, clean_path, csv_path, year_data_id
-                        )
-                    else:
-                        ok, msg, count = create_index(clean_path, csv_path, year_data_id)
+                    ok, msg, count = create_index_from_excel(
+                        excel_path, clean_path, csv_path, year_data_id
+                    )
                     if not ok:
                         raise RuntimeError(msg)
 
