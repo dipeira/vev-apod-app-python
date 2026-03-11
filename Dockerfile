@@ -1,13 +1,20 @@
 FROM python:3.11-slim
 
-# Install system dependencies (LibreOffice for Excel→PDF, DejaVu fonts for Greek)
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# Install system dependencies (LibreOffice, DejaVu fonts, Microsoft fonts)
+# Note: We enable 'contrib' repos to install ttf-mscorefonts-installer
+RUN sed -i 's/Components: main/Components: main contrib/' /etc/apt/sources.list.d/debian.sources 2>/dev/null || true \
+    && apt-get update \
+    && echo "ttf-mscorefonts-installer msttcorefonts/accepted-mscorefonts-eula select true" | debconf-set-selections \
+    && apt-get install -y --no-install-recommends \
+        fontconfig \
+        ttf-mscorefonts-installer \
         libreoffice \
         fonts-dejavu-core \
         fonts-liberation \
         fonts-crosextra-carlito \
         fonts-crosextra-caladea \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && fc-cache -f -v
 
 WORKDIR /app
 
