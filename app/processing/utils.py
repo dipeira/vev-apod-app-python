@@ -139,36 +139,46 @@ def _find_libreoffice():
 
 
 # ---------------------------------------------------------------------------
-# Helper: inject landscape orientation into .xlsx via ZIP/XML manipulation
-# (no openpyxl write needed — very fast for large workbooks)
+# Helper: optimize XLSX for PDF generation (Landscape + Autofit)
 # ---------------------------------------------------------------------------
-_PGSETUP_RE1 = re.compile(rb'<pageSetup[^/]*/>', re.DOTALL)
-_PGSETUP_RE2 = re.compile(rb'<pageSetup[^>]*>.*?</pageSetup>', re.DOTALL)
-_LANDSCAPE_TAG = b'<pageSetup orientation="landscape"/>'
-
-
-def _xlsx_set_landscape(src_path: str, dst_path: str):
+def _preprocess_xlsx(src_path: str, dst_path: str):
     """
-    Copy src .xlsx to dst, setting landscape + fit-to-one-page for every sheet.
-    This ensures LibreOffice renders each employee sheet on exactly 1 landscape page.
+    Copy src .xlsx to dst using openpyxl to:
+    1. Set landscape orientation.
+    2. Calculate and apply column autofit based on content length.
+       This fixes the #### issue when Linux substitute fonts are wider than Excel's defaults.
     """
-    with zipfile.ZipFile(src_path, 'r') as zin, \
-         zipfile.ZipFile(dst_path, 'w', zipfile.ZIP_DEFLATED) as zout:
-        for item in zin.infolist():
-            data = zin.read(item.filename)
-            if (item.filename.startswith('xl/worksheets/sheet')
-                    and item.filename.endswith('.xml')):
-                # Remove any existing pageSetup elements
-                data = _PGSETUP_RE1.sub(b'', data)
-                data = _PGSETUP_RE2.sub(b'', data)
-                # Inject landscape + fit-to-1-page before </worksheet>
-                if b'</worksheet>' in data:
-                    data = data.replace(
-                        b'</worksheet>',
-                        _LANDSCAPE_TAG + b'</worksheet>',
-                        1,
-                    )
-            zout.writestr(item, data)
+    import openpyxl
+    from openpyxl.utils import get_column_letter
+
+    # Load workbook (write mode)
+    wb = openpyxl.load_workbook(src_path)
+
+    for ws in wb.worksheets:
+        ws.page_setup.orientation = ws.ORIENTATION_LANDSCAPE
+
+        # Autofit: Iterate all columns to find max text length
+        for col in ws.columns:
+            max_length = 0
+            column_letter = get_column_letter(col[0].column)
+
+            for cell in col:
+                try:
+                    if cell.value:
+                        val_len = len(str(cell.value))
+                        if val_len > max_length:
+                            max_length = val_len
+                except Exception:
+                    pass
+
+            # Heuristic: (chars + buffer) * multiplier
+            # Linux fonts (DejaVu/Liberation) are wider than Calibri/Arial
+            adjusted_width = (max_length + 3) * 1.2
+            
+            # Apply the calculated width
+            ws.column_dimensions[column_letter].width = adjusted_width
+
+    wb.save(dst_path)
 
 
 # ---------------------------------------------------------------------------
@@ -176,9 +186,9 @@ def _xlsx_set_landscape(src_path: str, dst_path: str):
 # ---------------------------------------------------------------------------
 def excel_to_pdf(excel_path, pdf_path, yd_id=None):
     """
-    Convert Excel to PDF using LibreOffice --headless.
-    For .xlsx files, first injects landscape+fit-to-1-page via ZIP manipulation
-    so each employee sheet becomes exactly one landscape PDF page.
+    Convert Excel to PDF using LibreOffice.
+    Pre-processes the file to enforce Landscape and widen columns (fixing ####).
+    Handles .xls by converting to .xlsx first.
     Returns (success: bool, message: str, page_count: int)
     """
     lo = _find_libreoffice()
@@ -188,27 +198,43 @@ def excel_to_pdf(excel_path, pdf_path, yd_id=None):
                 0)
 
     _set(yd_id, progress=6,
-         detail='Βήμα 1/3: Μετατροπή Excel → PDF με LibreOffice… (παρακαλώ περιμένετε)')
+         detail='Βήμα 1/3: Προετοιμασία αρχείου (Landscape & Columns)…')
 
     out_dir = os.path.dirname(pdf_path)
     os.makedirs(out_dir, exist_ok=True)
 
     ext      = os.path.splitext(excel_path)[1].lower()
-    lo_input = excel_path
-    tmp_xlsx = None
+    lo_input = None
+    temp_files = []
 
-    if ext in ('.xlsx', '.xlsm'):
-        tmp_xlsx = tempfile.mktemp(suffix=ext, prefix='lo_landscape_')
+    try:
+        # 1. Standardize to XLSX (convert if needed)
+        src_xlsx = excel_path
+        if ext == '.xls':
+            _set(yd_id, detail='Βήμα 1/3: Μετατροπή .xls σε .xlsx…')
+            try:
+                # _convert_xls_to_xlsx is defined below; accessible at runtime
+                src_xlsx = _convert_xls_to_xlsx(excel_path)
+                temp_files.append(src_xlsx)
+            except Exception as e:
+                return False, f'Αποτυχία μετατροπής .xls: {e}', 0
+
+        # 2. Optimize (Widen columns + Landscape)
+        optimized_xlsx = tempfile.mktemp(suffix='.xlsx', prefix='optimized_')
+        temp_files.append(optimized_xlsx)
+
         try:
-            _xlsx_set_landscape(excel_path, tmp_xlsx)
-            lo_input = tmp_xlsx
-            logger.info('Landscape copy created: %s', tmp_xlsx)
+            _preprocess_xlsx(src_xlsx, optimized_xlsx)
+            lo_input = optimized_xlsx
+            logger.info('Optimized XLSX created: %s', optimized_xlsx)
         except Exception as e:
-            logger.warning('Could not inject landscape into xlsx (%s); using original', e)
-            lo_input = excel_path
+            logger.warning('Preprocessing failed (%s), using src', e)
+            lo_input = src_xlsx
 
-    # Private temp profile prevents concurrent-run conflicts in LibreOffice
-    lo_profile_dir = tempfile.mkdtemp(prefix='lo_profile_')
+        _set(yd_id, detail='Βήμα 1/3: Δημιουργία PDF με LibreOffice…')
+
+        # Private temp profile prevents concurrent-run conflicts in LibreOffice
+        lo_profile_dir = tempfile.mkdtemp(prefix='lo_profile_')
     # Build a correct file:// URI for both Linux (/tmp/...) and Windows (C:\...)
     lo_profile_posix = lo_profile_dir.replace(os.sep, '/')
     if not lo_profile_posix.startswith('/'):
@@ -285,8 +311,10 @@ def excel_to_pdf(excel_path, pdf_path, yd_id=None):
         return False, str(e), 0
     finally:
         shutil.rmtree(lo_profile_dir, ignore_errors=True)
-        if tmp_xlsx and os.path.exists(tmp_xlsx):
-            os.remove(tmp_xlsx)
+        for tmp in temp_files:
+            if os.path.exists(tmp):
+                try: os.remove(tmp)
+                except OSError: pass
 
 
 # ---------------------------------------------------------------------------
