@@ -143,40 +143,75 @@ def _find_libreoffice():
 # ---------------------------------------------------------------------------
 def _preprocess_xlsx(src_path: str, dst_path: str):
     """
-    Copy src .xlsx to dst using openpyxl to:
-    1. Set landscape orientation.
-    2. Calculate and apply column autofit based on content length.
-       This fixes the #### issue when Linux substitute fonts are wider than Excel's defaults.
+    Patch XLSX to prevent ### on Linux/Docker while maintaining readable text size.
+    Uses openpyxl to:
+      1. Convert numbers/dates to strings so LibreOffice never renders ###.
+      2. Set number_format to '@' (Text).
+      3. Set shrink_to_fit on all cells.
+      4. Set Landscape + FitToWidth=1, FitToHeight=0 (auto).
     """
     import openpyxl
     from openpyxl.utils import get_column_letter
+    from openpyxl.styles import Alignment
+    import copy
+    from datetime import date, datetime
 
-    # Load workbook (write mode)
-    wb = openpyxl.load_workbook(src_path)
+    # Load with data_only=True to get formula results
+    try:
+        wb = openpyxl.load_workbook(src_path, data_only=True)
+    except Exception:
+        wb = openpyxl.load_workbook(src_path)
 
     for ws in wb.worksheets:
         ws.page_setup.orientation = ws.ORIENTATION_LANDSCAPE
+        ws.page_setup.fitToPage = True
+        ws.page_setup.fitToWidth = 1
+        ws.page_setup.fitToHeight = 0  # 0 = automatic height
 
-        # Autofit: Iterate all columns to find max text length
-        for col in ws.columns:
-            max_length = 0
-            column_letter = get_column_letter(col[0].column)
+        col_widths = {}  # {column_index: max_length}
 
-            for cell in col:
-                try:
-                    if cell.value:
-                        val_len = len(str(cell.value))
-                        if val_len > max_length:
-                            max_length = val_len
-                except Exception:
-                    pass
+        # Iterate all cells
+        for row in ws.iter_rows():
+            for col_idx, cell in enumerate(row):
+                # 1. Force Shrink to Fit + Disable Wrap Text
+                # This is the key: it allows LibreOffice to shrink font per-cell
+                # instead of requiring a massive column width that shrinks the whole page.
+                if cell.alignment:
+                    new_align = copy.copy(cell.alignment)
+                    new_align.shrink_to_fit = True
+                    new_align.wrap_text = False
+                    cell.alignment = new_align
+                else:
+                    cell.alignment = Alignment(shrink_to_fit=True, wrap_text=False)
 
-            # Heuristic: (chars + buffer) * multiplier
-            # Linux fonts (DejaVu/Liberation) are wider than Calibri/Arial
-            adjusted_width = (max_length + 3) * 1.2
-            
-            # Apply the calculated width
-            ws.column_dimensions[column_letter].width = adjusted_width
+                # 2. Convert Numbers/Dates to Strings to prevent '###'
+                val = cell.value
+                if val is not None:
+                    # If it's a number, force it to string so it never renders as ###
+                    if isinstance(val, (int, float)):
+                        # Format logic: integers stay integers, floats get 2 decimals
+                        if isinstance(val, float):
+                            cell.value = f"{val:.2f}"
+                        else:
+                            cell.value = str(val)
+                        cell.data_type = 's'  # Force String type
+                        cell.number_format = '@'  # Force Text formatting
+                    elif isinstance(val, (datetime, date)):
+                        cell.value = val.strftime('%d/%m/%Y')
+                        cell.data_type = 's'
+                        cell.number_format = '@'
+
+                    # 3. Measure content for column width
+                    val_str = str(cell.value) if cell.value is not None else ''
+                    length = len(val_str)
+                    if length > col_widths.get(col_idx, 0):
+                        col_widths[col_idx] = length
+
+        # Apply widths
+        for col_idx, max_len in col_widths.items():
+            column_letter = get_column_letter(col_idx + 1)
+            # Multiplier 1.8 prevents ### on Linux fonts without making text too small via FitToPage
+            ws.column_dimensions[column_letter].width = (max_len + 5) * 1.8
 
     wb.save(dst_path)
 
@@ -206,48 +241,53 @@ def excel_to_pdf(excel_path, pdf_path, yd_id=None):
     ext      = os.path.splitext(excel_path)[1].lower()
     lo_input = None
     temp_files = []
+    lo_profile_dir = None
 
     try:
-        # 1. Standardize to XLSX (convert if needed)
-        src_xlsx = excel_path
-        if ext == '.xls':
-            _set(yd_id, detail='Βήμα 1/3: Μετατροπή .xls σε .xlsx…')
+        if sys.platform == 'win32':
+            # Windows: pass file directly to LibreOffice.
+            # LibreOffice reads XLS/XLSX print settings (landscape, fit-to-page) natively.
+            # Any XLSX intermediate step would lose those settings.
+            lo_input = excel_path
+
+        else:
+            # Linux/Docker: need XLSX so we can patch column widths and page setup.
+            src_xlsx = excel_path
+            if ext == '.xls':
+                _set(yd_id, detail='Βήμα 1/3: Μετατροπή .xls σε .xlsx…')
+                try:
+                    src_xlsx = _convert_xls_to_xlsx(excel_path)
+                    temp_files.append(src_xlsx)
+                except Exception as e:
+                    return False, f'Αποτυχία μετατροπής .xls: {e}', 0
+
+            optimized_xlsx = tempfile.mktemp(suffix='.xlsx', prefix='optimized_')
+            temp_files.append(optimized_xlsx)
             try:
-                # _convert_xls_to_xlsx is defined below; accessible at runtime
-                src_xlsx = _convert_xls_to_xlsx(excel_path)
-                temp_files.append(src_xlsx)
+                _preprocess_xlsx(src_xlsx, optimized_xlsx)
+                lo_input = optimized_xlsx
+                logger.info('Optimized XLSX created: %s', optimized_xlsx)
             except Exception as e:
-                return False, f'Αποτυχία μετατροπής .xls: {e}', 0
-
-        # 2. Optimize (Widen columns + Landscape)
-        optimized_xlsx = tempfile.mktemp(suffix='.xlsx', prefix='optimized_')
-        temp_files.append(optimized_xlsx)
-
-        try:
-            _preprocess_xlsx(src_xlsx, optimized_xlsx)
-            lo_input = optimized_xlsx
-            logger.info('Optimized XLSX created: %s', optimized_xlsx)
-        except Exception as e:
-            logger.warning('Preprocessing failed (%s), using src', e)
-            lo_input = src_xlsx
+                logger.warning('Preprocessing failed (%s), using src', e)
+                lo_input = src_xlsx
 
         _set(yd_id, detail='Βήμα 1/3: Δημιουργία PDF με LibreOffice…')
 
         # Private temp profile prevents concurrent-run conflicts in LibreOffice
         lo_profile_dir = tempfile.mkdtemp(prefix='lo_profile_')
-    # Build a correct file:// URI for both Linux (/tmp/...) and Windows (C:\...)
-    lo_profile_posix = lo_profile_dir.replace(os.sep, '/')
-    if not lo_profile_posix.startswith('/'):
-        lo_profile_posix = '/' + lo_profile_posix   # Windows: /C:/...
-    lo_profile_uri = f'file://{lo_profile_posix}'   # file:///tmp/... or file:///C:/...
+        
+        # Build a correct file:// URI for both Linux (/tmp/...) and Windows (C:\...)
+        lo_profile_posix = lo_profile_dir.replace(os.sep, '/')
+        if not lo_profile_posix.startswith('/'):
+            lo_profile_posix = '/' + lo_profile_posix   # Windows: /C:/...
+        lo_profile_uri = f'file://{lo_profile_posix}'   # file:///tmp/... or file:///C:/...
 
-    # Kill any stale soffice processes left from a previous timed-out run.
-    # On Linux only — on Windows this would be too aggressive.
-    if sys.platform != 'win32':
-        subprocess.run(['pkill', '-9', '-f', 'soffice'], capture_output=True)
-        time.sleep(0.5)  # give the OS a moment to reap them
+        # Kill any stale soffice processes left from a previous timed-out run.
+        # On Linux only — on Windows this would be too aggressive.
+        if sys.platform != 'win32':
+            subprocess.run(['pkill', '-9', '-f', 'soffice'], capture_output=True)
+            time.sleep(0.5)  # give the OS a moment to reap them
 
-    try:
         proc = subprocess.Popen(
             [
                 lo, '--headless',
@@ -310,12 +350,12 @@ def excel_to_pdf(excel_path, pdf_path, yd_id=None):
         logger.exception('excel_to_pdf failed')
         return False, str(e), 0
     finally:
-        shutil.rmtree(lo_profile_dir, ignore_errors=True)
+        if lo_profile_dir:
+            shutil.rmtree(lo_profile_dir, ignore_errors=True)
         for tmp in temp_files:
             if os.path.exists(tmp):
                 try: os.remove(tmp)
                 except OSError: pass
-
 
 # ---------------------------------------------------------------------------
 # Step 2: Clean PDF — remove blank pages (≤3 words)
@@ -543,12 +583,19 @@ def create_index_from_excel(excel_path, clean_pdf_path, csv_path, yd_id=None):
                     else:
                         s = str(val).strip()
 
-                    # AFM: exactly 9 digits — keep overwriting (take last match)
-                    if re.fullmatch(r'\d{9}', s):
-                        afm = s.lstrip('0')
-                    # AMKA: exactly 11 digits — take first match
-                    elif re.fullmatch(r'\d{11}', s) and not amka:
-                        amka = s.lstrip('0')
+                    # Robustly find AFM/AMKA even if mixed with text (e.g., "ΑΦΜ: 123456789")
+                    # \b ensures we match whole numbers only.
+                    tokens = re.findall(r'\b\d+\b', s)
+                    for token in tokens:
+                        if len(token) in (8, 9):
+                            afm = token.lstrip('0')  # Keep last found 8 or 9-digit number
+                        elif len(token) in (10, 11) and not amka:
+                            amka = token.lstrip('0') # Keep first found 10 or 11-digit number
+
+                    # Optimization: If we found both, stop scanning this row to prevent
+                    # subsequent columns (like dates or amounts) from overwriting the AFM.
+                    if afm and amka:
+                        break
 
                 if afm and amka:
                     records.append((afm, amka))
