@@ -141,7 +141,7 @@ def _find_libreoffice():
 # ---------------------------------------------------------------------------
 # Helper: optimize XLSX for PDF generation (Landscape + Autofit)
 # ---------------------------------------------------------------------------
-def _preprocess_xlsx(src_path: str, dst_path: str):
+def _preprocess_xlsx(src_path: str, dst_path: str, yd_id=None):
     """
     Patch XLSX to prevent ### on Linux/Docker while maintaining readable text size.
     Uses openpyxl to:
@@ -149,6 +149,7 @@ def _preprocess_xlsx(src_path: str, dst_path: str):
       2. Set number_format to '@' (Text).
       3. Set shrink_to_fit on all cells.
       4. Set Landscape + FitToWidth=1, FitToHeight=0 (auto).
+    Checks abort flag after each sheet so delete/abort is responsive.
     """
     import openpyxl
     from openpyxl.utils import get_column_letter
@@ -163,6 +164,8 @@ def _preprocess_xlsx(src_path: str, dst_path: str):
         wb = openpyxl.load_workbook(src_path)
 
     for ws in wb.worksheets:
+        if _aborted(yd_id):
+            raise _Abort()
         ws.page_setup.orientation = ws.ORIENTATION_LANDSCAPE
         ws.page_setup.fitToPage = True
         ws.page_setup.fitToWidth = 1
@@ -264,9 +267,11 @@ def excel_to_pdf(excel_path, pdf_path, yd_id=None):
             optimized_xlsx = tempfile.mktemp(suffix='.xlsx', prefix='optimized_')
             temp_files.append(optimized_xlsx)
             try:
-                _preprocess_xlsx(src_xlsx, optimized_xlsx)
+                _preprocess_xlsx(src_xlsx, optimized_xlsx, yd_id)
                 lo_input = optimized_xlsx
                 logger.info('Optimized XLSX created: %s', optimized_xlsx)
+            except _Abort:
+                raise
             except Exception as e:
                 logger.warning('Preprocessing failed (%s), using src', e)
                 lo_input = src_xlsx
