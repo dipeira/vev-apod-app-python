@@ -32,7 +32,7 @@
               <label class="form-label fw-semibold">Φορολογικό Έτος</label>
               <select name="year" class="form-select" required>
                 {% for yd in years %}
-                  <option value="{{ yd.year }}">{{ yd.year }}</option>
+                  <option value="{{ yd.year }}" {% if loop.first %}selected{% endif %}>{{ yd.year }}</option>
                 {% endfor %}
               </select>
             </div>
