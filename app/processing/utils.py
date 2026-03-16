@@ -312,9 +312,9 @@ def excel_to_pdf(excel_path, pdf_path, yd_id=None):
                 _kill_proc(proc)
                 raise _Abort()
             now = time.time()
-            if now - start > 1200:
+            if now - start > 7200:
                 _kill_proc(proc)
-                return False, 'LibreOffice timeout (>20 λεπτά).', 0
+                return False, 'LibreOffice timeout (>120 λεπτά).', 0
             if now - last_update >= 5:
                 elapsed = int(now - start)
                 _set(yd_id, detail=f'Βήμα 1/3: LibreOffice εκτελείται… ({elapsed}s)')
