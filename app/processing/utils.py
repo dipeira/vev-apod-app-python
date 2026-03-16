@@ -510,7 +510,7 @@ def _convert_xls_to_xlsx(xls_path):
                 xls_path,
             ],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            check=True, timeout=300,
+            check=True, timeout=1200,
             env={**os.environ, 'HOME': lo_profile_dir} if sys.platform != 'win32' else None,
         )
 
