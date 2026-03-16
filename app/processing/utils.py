@@ -256,7 +256,7 @@ def excel_to_pdf(excel_path, pdf_path, yd_id=None):
             if ext == '.xls':
                 _set(yd_id, detail='Βήμα 1/3: Μετατροπή .xls σε .xlsx…')
                 try:
-                    src_xlsx = _convert_xls_to_xlsx(excel_path)
+                    src_xlsx = _convert_xls_to_xlsx(excel_path, yd_id)
                     temp_files.append(src_xlsx)
                 except Exception as e:
                     return False, f'Αποτυχία μετατροπής .xls: {e}', 0
@@ -479,10 +479,11 @@ def create_index(pdf_path, csv_path, yd_id=None):
 # ---------------------------------------------------------------------------
 # Step 3b: Create CSV index from Excel (Strategy B)
 # ---------------------------------------------------------------------------
-def _convert_xls_to_xlsx(xls_path):
+def _convert_xls_to_xlsx(xls_path, yd_id=None):
     """
     Convert .xls to .xlsx using LibreOffice (headless) so openpyxl can read it.
     Returns path to a temporary .xlsx file.
+    Checks abort flag every 0.3s so delete/abort is responsive.
     """
     lo = _find_libreoffice()
     if not lo:
@@ -490,7 +491,7 @@ def _convert_xls_to_xlsx(xls_path):
 
     tmp_dir = tempfile.mkdtemp(prefix='xls2xlsx_')
     lo_profile_dir = tempfile.mkdtemp(prefix='lo_profile_conv_')
-    
+
     # Build profile URI
     lo_profile_posix = lo_profile_dir.replace(os.sep, '/')
     if not lo_profile_posix.startswith('/'):
@@ -501,7 +502,7 @@ def _convert_xls_to_xlsx(xls_path):
         if sys.platform != 'win32':
             subprocess.run(['pkill', '-9', '-f', 'soffice'], capture_output=True)
 
-        subprocess.run(
+        proc = subprocess.Popen(
             [
                 lo, '--headless', '--norestore', '--nofirststartwizard',
                 f'-env:UserInstallation={lo_profile_uri}',
@@ -510,15 +511,28 @@ def _convert_xls_to_xlsx(xls_path):
                 xls_path,
             ],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            check=True, timeout=1200,
+            start_new_session=True,
             env={**os.environ, 'HOME': lo_profile_dir} if sys.platform != 'win32' else None,
         )
+
+        start = time.time()
+        while proc.poll() is None:
+            if _aborted(yd_id):
+                _kill_proc(proc)
+                raise _Abort()
+            if time.time() - start > 1200:
+                _kill_proc(proc)
+                raise RuntimeError('LibreOffice XLS→XLSX timeout (>20 λεπτά).')
+            time.sleep(0.3)
+
+        if proc.returncode != 0:
+            raise RuntimeError(f'LibreOffice XLS→XLSX failed (exit {proc.returncode})')
 
         out_name = os.path.splitext(os.path.basename(xls_path))[0] + '.xlsx'
         out_path = os.path.join(tmp_dir, out_name)
         if not os.path.exists(out_path):
             raise RuntimeError('LibreOffice conversion failed (no output file)')
-        
+
         # Move to a standalone temp file
         fd, final_path = tempfile.mkstemp(suffix='.xlsx', prefix='converted_')
         os.close(fd)
