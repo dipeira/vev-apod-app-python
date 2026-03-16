@@ -25,7 +25,7 @@
                  min="2000" max="2100" required>
         </div>
         <div class="col-md-2">
-          <button type="submit" class="btn btn-brand w-100">
+          <button type="submit" id="btn-upload" class="btn btn-brand w-100">
             <i class="bi bi-upload me-1"></i> Ανέβασμα
           </button>
         </div>
@@ -194,7 +194,7 @@ document.querySelector('form[action*="upload"]').addEventListener('submit', func
 // ── Status colours ────────────────────────────────────────────────────────
 const BG = { idle:'secondary', processing:'warning text-dark', done:'success', error:'danger' };
 
-// ── Enable / disable ALL Process buttons ─────────────────────────────────
+// ── Enable / disable ALL Process + Upload buttons ────────────────────────
 function setAllProcessButtons(disabled) {
   document.querySelectorAll('.btn-process').forEach(b => {
     if (!disabled) {
@@ -204,6 +204,8 @@ function setAllProcessButtons(disabled) {
       b.disabled = true;
     }
   });
+  const uploadBtn = document.getElementById('btn-upload');
+  if (uploadBtn) uploadBtn.disabled = disabled;
 }
 
 // ── Update a single row's UI ──────────────────────────────────────────────
