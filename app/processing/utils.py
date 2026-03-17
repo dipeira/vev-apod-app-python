@@ -15,7 +15,6 @@ import sys
 import tempfile
 import threading
 import time
-import zipfile
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -141,7 +140,7 @@ def _find_libreoffice():
 # ---------------------------------------------------------------------------
 # Helper: optimize XLSX for PDF generation (Landscape + Autofit)
 # ---------------------------------------------------------------------------
-def _preprocess_xlsx(src_path: str, dst_path: str):
+def _preprocess_xlsx(src_path: str, dst_path: str, yd_id=None):
     """
     Patch XLSX to prevent ### on Linux/Docker while maintaining readable text size.
     Uses openpyxl to:
@@ -167,6 +166,8 @@ def _preprocess_xlsx(src_path: str, dst_path: str):
     align_cache = {hash(None): default_align}
 
     for ws in wb.worksheets:
+        if _aborted(yd_id):
+            raise _Abort()
         ws.page_setup.orientation = ws.ORIENTATION_LANDSCAPE
         ws.page_setup.fitToPage = True
         ws.page_setup.fitToWidth = 1
@@ -581,7 +582,7 @@ def create_index_from_excel(excel_path, clean_pdf_path, csv_path, yd_id=None):
         if excel_path.lower().endswith('.xls'):
             try:
                 _set(yd_id, detail='Βήμα 3/3: Μετατροπή .xls σε .xlsx για ανάγνωση δεδομένων…')
-                temp_xlsx = _convert_xls_to_xlsx(excel_path)
+                temp_xlsx = _convert_xls_to_xlsx(excel_path, yd_id)
                 target_path = temp_xlsx
             except Exception as e:
                 logger.warning('Could not convert .xls to .xlsx: %s', e)
@@ -626,8 +627,6 @@ def create_index_from_excel(excel_path, clean_pdf_path, csv_path, yd_id=None):
 
                 if afm and amka:
                     records.append((afm, amka))
-
-        wb.close()
 
         if not records:
             return False, 'Δεν βρέθηκαν εγγραφές ΑΦΜ+ΑΜΚΑ στο αρχείο Excel.', 0
