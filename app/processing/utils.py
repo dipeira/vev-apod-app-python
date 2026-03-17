@@ -140,8 +140,7 @@ def _find_libreoffice():
 
 # ---------------------------------------------------------------------------
 # Helper: optimize XLSX for PDF generation (Landscape + Autofit)
-# ---------------------------------------------------------------------------
-def _preprocess_xlsx(src_path: str, dst_path: str, yd_id=None):
+# -------------------------------------------------------------def _preprocess_xlsx(src_path: str, dst_path: str):
     """
     Patch XLSX to prevent ### on Linux/Docker while maintaining readable text size.
     Uses openpyxl to:
@@ -149,7 +148,6 @@ def _preprocess_xlsx(src_path: str, dst_path: str, yd_id=None):
       2. Set number_format to '@' (Text).
       3. Set shrink_to_fit on all cells.
       4. Set Landscape + FitToWidth=1, FitToHeight=0 (auto).
-    Checks abort flag after each sheet so delete/abort is responsive.
     """
     import openpyxl
     from openpyxl.utils import get_column_letter
@@ -163,9 +161,11 @@ def _preprocess_xlsx(src_path: str, dst_path: str, yd_id=None):
     except Exception:
         wb = openpyxl.load_workbook(src_path)
 
+    # Cache pre-configured Alignment objects to avoid millions of copy.copy() calls
+    default_align = Alignment(shrink_to_fit=True, wrap_text=False)
+    align_cache = {hash(None): default_align}
+
     for ws in wb.worksheets:
-        if _aborted(yd_id):
-            raise _Abort()
         ws.page_setup.orientation = ws.ORIENTATION_LANDSCAPE
         ws.page_setup.fitToPage = True
         ws.page_setup.fitToWidth = 1
@@ -176,39 +176,42 @@ def _preprocess_xlsx(src_path: str, dst_path: str, yd_id=None):
         # Iterate all cells
         for row in ws.iter_rows():
             for col_idx, cell in enumerate(row):
+                val = cell.value
+                if val is None:
+                    continue  # Optimization: Skip empty cells entirely to save massive time
+
                 # 1. Force Shrink to Fit + Disable Wrap Text
-                # This is the key: it allows LibreOffice to shrink font per-cell
-                # instead of requiring a massive column width that shrinks the whole page.
-                if cell.alignment:
-                    new_align = copy.copy(cell.alignment)
+                # Cached approach allows LibreOffice to shrink font per-cell without a huge python loop
+                align = cell.alignment
+                align_hash = hash(align)
+                if align_hash not in align_cache:
+                    new_align = copy.copy(align)
                     new_align.shrink_to_fit = True
                     new_align.wrap_text = False
-                    cell.alignment = new_align
-                else:
-                    cell.alignment = Alignment(shrink_to_fit=True, wrap_text=False)
+                    align_cache[align_hash] = new_align
+                cell.alignment = align_cache[align_hash]
 
                 # 2. Convert Numbers/Dates to Strings to prevent '###'
-                val = cell.value
-                if val is not None:
-                    # If it's a number, force it to string so it never renders as ###
-                    if isinstance(val, (int, float)):
-                        # Format logic: integers stay integers, floats get 2 decimals
-                        if isinstance(val, float):
-                            cell.value = f"{val:.2f}"
-                        else:
-                            cell.value = str(val)
-                        cell.data_type = 's'  # Force String type
-                        cell.number_format = '@'  # Force Text formatting
-                    elif isinstance(val, (datetime, date)):
+                if isinstance(val, (int, float)):
+                    if isinstance(val, float):
+                        cell.value = f"{val:.2f}"
+                    else:
+                        cell.value = str(val)
+                    cell.data_type = 's'  # Force String type
+                    cell.number_format = '@'  # Force Text formatting
+                elif hasattr(val, 'strftime'):
+                    try:
                         cell.value = val.strftime('%d/%m/%Y')
                         cell.data_type = 's'
                         cell.number_format = '@'
+                    except Exception:
+                        pass
 
-                    # 3. Measure content for column width
-                    val_str = str(cell.value) if cell.value is not None else ''
-                    length = len(val_str)
-                    if length > col_widths.get(col_idx, 0):
-                        col_widths[col_idx] = length
+                # 3. Measure content for column width
+                val_str = str(cell.value) if cell.value is not None else ''
+                length = len(val_str)
+                if length > col_widths.get(col_idx, 0):
+                    col_widths[col_idx] = length
 
         # Apply widths
         for col_idx, max_len in col_widths.items():
