@@ -140,7 +140,8 @@ def _find_libreoffice():
 
 # ---------------------------------------------------------------------------
 # Helper: optimize XLSX for PDF generation (Landscape + Autofit)
-# -------------------------------------------------------------def _preprocess_xlsx(src_path: str, dst_path: str):
+# ---------------------------------------------------------------------------
+def _preprocess_xlsx(src_path: str, dst_path: str):
     """
     Patch XLSX to prevent ### on Linux/Docker while maintaining readable text size.
     Uses openpyxl to:
@@ -220,6 +221,10 @@ def _find_libreoffice():
             ws.column_dimensions[column_letter].width = (max_len + 5) * 1.8
 
     wb.save(dst_path)
+    try:
+        wb.close()
+    except Exception:
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -676,6 +681,9 @@ def create_index_from_excel(excel_path, clean_pdf_path, csv_path, yd_id=None):
         logger.exception('create_index_from_excel failed')
         return False, str(e), 0
     finally:
+        if 'wb' in locals() and wb:
+            try: wb.close()
+            except Exception: pass
         if temp_xlsx and os.path.exists(temp_xlsx):
             try: os.remove(temp_xlsx)
             except OSError: pass
